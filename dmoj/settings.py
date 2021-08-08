@@ -61,6 +61,8 @@ VNOJ_CP_PROBLEM = 20 # Each suggested problem equal 20 CP
 
 VNOJ_HOMEPAGE_TOP_USERS_COUNT = 5
 
+VNOJ_IMPORT_FC_LOG_PATH = 'fc_log.txt'
+
 # Urls of discord webhook.
 # https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks
 DISCORD_WEBHOOK = {
