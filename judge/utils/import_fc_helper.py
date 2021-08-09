@@ -197,15 +197,9 @@ def create_test_data(contest_id, problem_code, zip_path, dst_folder, checker_pat
                     raise Exception("Cannot found ext for `" + str(case) + "`")
             else:
                 raise Exception("Cannot found ext for `" + str(case) + "`")
-        if contest_id == 'fc043' and problem_code == 'kinver':
-            inputs, outputs = fix_input_output(inputs, outputs)
+
         if len(inputs) != len(outputs):
-            # execption because this problem doesn't need output file
-            if contest_id.lower() == 'fc084' and problem_code.lower() == 'math':
-                while len(outputs) < len(inputs):
-                    outputs.append(outputs[-1])
-            else:
-                raise Exception("Inputs and outputs has different number of files")
+            raise Exception("Inputs and outputs has different number of files")
 
         inputs.sort()
         outputs.sort()
