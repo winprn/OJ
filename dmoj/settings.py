@@ -63,12 +63,69 @@ VNOJ_HOMEPAGE_TOP_USERS_COUNT = 5
 
 VNOJ_IMPORT_FC_LOG_PATH = 'fc_log.txt'
 
+VNOJ_DISPLAY_RANKS = (
+    ('user', _('Normal User')),
+    ('setter', _('Problem Setter')),
+    ('daor', _('Bedao Team')),
+    ('staff', _('Staff')),
+    ('banned', _('Banned User')),
+    ('admin', _('Admin')),
+)
+
+# List of online judge preset for OJ API
+OJ_PROBLEM_PRESET = [
+    {
+        'regex': r'^https://codeforces\.com/problemset/problem/(?P<contestid>\w+)/(?P<index>\w+)$',
+        'codename': 'CF_%s_%s',
+        'judge': 'Codeforces',
+        },
+    {
+        'regex': r'^https://codeforces\.com/contest/(?P<contestid>\w+)/problem/(?P<index>\w+)$',
+        'codename': 'CF_%s_%s',
+        'judge': 'Codeforces',
+    },
+    {
+        'regex': r'^https://atcoder.jp/contests/(?P<contestId>\w+)/tasks/(?P<index>\w+)$',
+        'codename': 'AC_%s_%s',
+        'judge': 'Atcoder',
+    },
+    {
+        'regex': r'^https://oj\.vnoi\.info/problem/(?P<codename>\w+)$',
+        'codename': 'VNOJ_%s',
+        'judge': 'VNOJ',
+    },
+    {
+        'regex': r'^https://open\.kattis\.com/problems/(?P<codename>\w+)$',
+        'codename': 'KATTIS_%s',
+        'judge': 'Kattis',
+    },
+    {
+        'regex': r'^https://codeforces\.com/gym/(?P<contestid>\w+)/problem/(?P<index>\w+)$',
+        'codename': 'CFGYM_%s_%s',
+        'judge': 'CodeforcesGym',
+    },
+]
+
+OJ_LIST = [
+    ('Atcoder', 'Atcoder'),
+    ('Codeforces', 'Codeforces'),
+    ('CodeforcesGym', 'Codeforces (Gym)'),
+    ('Kattis', 'Kattis'),
+    ('VNOJ', 'VNOJ'),
+]
+
+OJ_REQUESTS_TIMEOUT = 5  # in seconds
+
+OJAPI_CACHE_TIMEOUT = 3600  # Cache timeout for OJAPI data
+
 # Urls of discord webhook.
 # https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks
 DISCORD_WEBHOOK = {
     'on_new_ticket': None,
     'on_new_comment': None,
     'on_new_suggested_problem': None,
+    'on_new_tag_problem': None,
+    'on_new_tag': None,
 }
 
 SITE_FULL_URL = None  # ie 'https://oj.vnoi.info', please remove the last / if needed
@@ -119,6 +176,9 @@ DMOJ_STATS_SUBMISSION_RESULT_COLORS = {
     'ERR': '#ffa71c',
 }
 DMOJ_API_PAGE_SIZE = 1000
+
+DMOJ_PASSWORD_RESET_LIMIT_WINDOW = 3600
+DMOJ_PASSWORD_RESET_LIMIT_COUNT = 10
 
 MARKDOWN_STYLES = {}
 MARKDOWN_DEFAULT_STYLE = {}
@@ -199,6 +259,14 @@ else:
                         'judge.ProblemGroup',
                         'judge.ProblemType',
                     ],
+                },
+                {
+                    'model': 'judge.TagProblem',
+                    'icon': 'fa-tag',
+                    'children': [
+                        'judge.TagGroup',
+                        'judge.Tag',
+                    ]
                 },
                 {
                     'model': 'judge.Submission',
@@ -401,13 +469,14 @@ BLEACH_USER_SAFE_TAGS = [
     'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'caption', 'colgroup', 'col', 'tfoot',
     'img', 'audio', 'video', 'source',
     'a', 'strike',
-    'style', 'noscript', 'center', 'object'
+    'style', 'noscript', 'center', 'object', 'iframe',
 ]
 
 BLEACH_USER_SAFE_ATTRS = {
     '*': ['id', 'class', 'style', 'data', 'height'],
     'img': ['src', 'alt', 'title', 'width', 'height', 'data-src'],
     'a': ['href', 'alt', 'title'],
+    'iframe': ['src', 'height', 'width', 'allow'],
     'abbr': ['title'],
     'dfn': ['title'],
     'time': ['datetime'],
@@ -488,6 +557,14 @@ MARTOR_UPLOAD_URL_PREFIX = '/martor'
 # Directory under MEDIA_ROOT to use to store image uploaded through martor.
 MARTOR_UPLOAD_MEDIA_DIR = 'martor'
 MARTOR_UPLOAD_SAFE_EXTS = {'.jpg', '.png', '.gif'}
+
+PDF_STATEMENT_UPLOAD_URL_PREFIX = '/pdf'
+PDF_STATEMENT_UPLOAD_MEDIA_DIR = 'pdf'
+PDF_STATEMENT_SAFE_EXTS = {'pdf'}
+PDF_STATEMENT_MAX_FILE_SIZE = 5242880
+
+SUBMISSION_FILE_UPLOAD_URL_PREFIX = '/submission_file'
+SUBMISSION_FILE_UPLOAD_MEDIA_DIR = 'submission_file'
 
 # Database
 # https://docs.djangoproject.com/en/2.2/ref/settings/#databases

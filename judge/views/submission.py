@@ -25,7 +25,7 @@ from judge.models import Contest, Language, Organization, Problem, ProblemTransl
 from judge.utils.infinite_paginator import InfinitePaginationMixin
 from judge.utils.problems import get_result_data, user_completed_ids, user_editable_ids, user_tester_ids
 from judge.utils.raw_sql import join_sql_subquery, use_straight_join
-from judge.utils.views import DiggPaginatorMixin, TitleMixin
+from judge.utils.views import DiggPaginatorMixin, TitleMixin, generic_message
 
 
 def submission_related(queryset):
@@ -33,7 +33,7 @@ def submission_related(queryset):
         .only('id', 'user__user__username', 'user__display_rank', 'user__rating', 'problem__name',
               'problem__code', 'problem__is_public', 'language__short_name', 'language__key', 'date', 'time', 'memory',
               'points', 'result', 'status', 'case_points', 'case_total', 'current_testcase', 'contest_object',
-              'locked_after') \
+              'locked_after', 'problem__submission_source_visibility_mode') \
         .prefetch_related('contest_object__authors', 'contest_object__curators')
 
 
@@ -81,6 +81,13 @@ class SubmissionSource(SubmissionDetailBase):
         context['raw_source'] = submission.source.source.rstrip('\n')
         context['highlighted_source'] = highlight_code(submission.source.source, submission.language.pygments)
         return context
+
+    def dispatch(self, request, *args, **kwargs):
+        submission = self.get_object()
+        if submission.language.file_only and not request.user.is_superuser:
+            return generic_message(request, 'Access denied', 'This source cannot be viewed by normal users.',
+                                   404)
+        return super(SubmissionSource, self).dispatch(request, *args, **kwargs)
 
 
 def make_batch(batch, cases):

@@ -1,7 +1,7 @@
 import logging
 import os
 import shutil
-from datetime import timedelta
+from datetime import datetime, timedelta
 from operator import itemgetter
 from random import randrange
 
@@ -39,6 +39,7 @@ from judge.utils.problems import hot_problems, user_attempted_ids, \
 from judge.utils.strings import safe_float_or_none, safe_int_or_none
 from judge.utils.tickets import own_ticket_filter
 from judge.utils.views import QueryStringSortMixin, SingleObjectFormView, TitleMixin, add_file_response, generic_message
+from judge.views.widgets import pdf_statement_uploader, submission_uploader
 
 
 def get_contest_problem(problem, profile):
@@ -155,6 +156,22 @@ class ProblemDetail(ProblemMixin, SolvedProblemMixin, CommentedDetailView):
     context_object_name = 'problem'
     template_name = 'problem/problem.html'
 
+    def get_object(self, queryset=None):
+        problem = super(ProblemDetail, self).get_object(queryset)
+
+        user = self.request.user
+        authed = user.is_authenticated
+        self.contest_problem = (None if not authed or user.profile.current_contest is None else
+                                get_contest_problem(problem, user.profile))
+
+        return problem
+
+    def is_comment_locked(self):
+        if self.contest_problem and self.contest_problem.contest.use_clarifications:
+            return True
+
+        return super(ProblemDetail, self).is_comment_locked()
+
     def get_comment_page(self):
         return 'p:%s' % self.object.code
 
@@ -162,10 +179,9 @@ class ProblemDetail(ProblemMixin, SolvedProblemMixin, CommentedDetailView):
         context = super(ProblemDetail, self).get_context_data(**kwargs)
         user = self.request.user
         authed = user.is_authenticated
+        contest_problem = self.contest_problem
         context['has_submissions'] = authed and Submission.objects.filter(user=user.profile,
                                                                           problem=self.object).exists()
-        contest_problem = (None if not authed or user.profile.current_contest is None else
-                           get_contest_problem(self.object, user.profile))
         context['contest_problem'] = contest_problem
         if contest_problem:
             clarifications = self.object.clarifications
@@ -285,11 +301,12 @@ class ProblemList(QueryStringSortMixin, TitleMixin, SolvedProblemMixin, ListView
     context_object_name = 'problems'
     template_name = 'problem/list.html'
     paginate_by = 50
-    sql_sort = frozenset(('points', 'ac_rate', 'user_count', 'code'))
+    sql_sort = frozenset(('points', 'ac_rate', 'user_count', 'code', 'date'))
     manual_sort = frozenset(('name', 'group', 'solved', 'type'))
     all_sorts = sql_sort | manual_sort
     default_desc = frozenset(('points', 'ac_rate', 'user_count'))
-    default_sort = 'points'
+    # Default sort by date
+    default_sort = '-date'
 
     def get_paginator(self, queryset, per_page, orphans=0,
                       allow_empty_first_page=True, **kwargs):
@@ -336,18 +353,18 @@ class ProblemList(QueryStringSortMixin, TitleMixin, SolvedProblemMixin, ListView
             return None
         return self.request.profile
 
-    def get_normal_queryset(self):
-        filter = Q(is_public=True)
+    def get_filter(self):
+        filter = Q(is_public=True) & Q(is_organization_private=False)
         if self.profile is not None:
             filter |= Q(authors=self.profile)
             filter |= Q(curators=self.profile)
             filter |= Q(testers=self.profile)
+        return filter
+
+    def get_normal_queryset(self):
+        filter = self.get_filter()
         queryset = Problem.objects.filter(filter).select_related('group').defer('description', 'summary')
-        if not self.request.user.has_perm('see_organization_problem'):
-            filter = Q(is_organization_private=False)
-            if self.profile is not None:
-                filter |= Q(organizations__in=self.profile.organizations.all())
-            queryset = queryset.filter(filter)
+
         if self.profile is not None and self.hide_solved:
             queryset = queryset.exclude(id__in=Submission.objects.filter(user=self.profile, points=F('problem__points'))
                                         .values_list('problem__id', flat=True))
@@ -467,33 +484,8 @@ class SuggestList(ProblemList):
     template_name = 'problem/suggest-list.html'
     permission_required = "superuser"
 
-    def get_normal_queryset(self):
-        filter = Q(is_public=False)
-
-        filter &= ~Q(suggester=None)
-
-        queryset = Problem.objects.filter(filter).select_related('group').defer('description', 'summary')
-        if self.show_types:
-            queryset = queryset.prefetch_related('types')
-        if self.category is not None:
-            queryset = queryset.filter(group__id=self.category)
-        if self.selected_types:
-            queryset = queryset.filter(types__in=self.selected_types)
-        if 'search' in self.request.GET:
-            self.search_query = query = ' '.join(self.request.GET.getlist('search')).strip()
-            if query:
-                if settings.ENABLE_FTS and self.full_text:
-                    queryset = queryset.search(query, queryset.BOOLEAN).extra(order_by=['-relevance'])
-                else:
-                    queryset = queryset.filter(
-                        Q(code__icontains=query) | Q(name__icontains=query) | Q(source__icontains=query) |
-                        Q(translations__name__icontains=query, translations__language=self.request.LANGUAGE_CODE))
-        self.prepoint_queryset = queryset
-        if self.point_start is not None:
-            queryset = queryset.filter(points__gte=self.point_start)
-        if self.point_end is not None:
-            queryset = queryset.filter(points__lte=self.point_end)
-        return queryset.distinct()
+    def get_filter(self):
+        return Q(is_public=False) & ~Q(suggester=None)
 
     def get(self, request, *args, **kwargs):
         if not request.user.has_perm('judge.suggest_new_problem'):
@@ -645,7 +637,17 @@ class ProblemSubmit(LoginRequiredMixin, ProblemMixin, TitleMixin, SingleObjectFo
             else:
                 self.new_submission.save()
 
-            source = SubmissionSource(submission=self.new_submission, source=form.cleaned_data['source'])
+            submission_file = form.files.get('submission_file', None)
+            if submission_file is not None:
+                source_url = submission_uploader(
+                    submission_file=submission_file,
+                    problem_code=self.new_submission.problem.code,
+                    user_id=self.new_submission.user.user.id,
+                )
+            else:
+                source_url = ''
+
+            source = SubmissionSource(submission=self.new_submission, source=form.cleaned_data['source'] + source_url)
             source.save()
 
         # Save a query.
@@ -683,6 +685,8 @@ class ProblemSubmit(LoginRequiredMixin, ProblemMixin, TitleMixin, SingleObjectFo
                 Submission.objects.select_related('source', 'language'),
                 id=submission_id,
             )
+            if self.old_submission.language.file_only:
+                raise Http404()
             if not request.user.has_perm('judge.resubmit_other') and self.old_submission.user != request.profile:
                 raise PermissionDenied()
         else:
@@ -711,6 +715,7 @@ class ProblemClone(ProblemMixin, PermissionRequiredMixin, TitleMixin, SingleObje
         problem.ac_rate = 0
         problem.user_count = 0
         problem.code = form.cleaned_data['code']
+        problem.date = datetime.now()
         with revisions.create_revision(atomic=True):
             problem.save()
             problem.authors.add(self.request.profile)
@@ -736,11 +741,23 @@ class ProblemCreate(PermissionRequiredMixin, TitleMixin, CreateView):
     def get_content_title(self):
         return _('Creating new problem')
 
+    def save_statement(self, form, problem):
+        statement_file = form.files.get('statement_file', None)
+        if statement_file is not None:
+            if not self.request.user.has_perm('judge.upload_file_statement'):
+                form.add_error('statement_file', 'You don\'t have permission to upload file-type statement.')
+                return self.form_invalid(form)
+            problem.pdf_url = pdf_statement_uploader(statement_file)
+
     def form_valid(self, form):
         self.object = problem = form.save()
         problem.authors.add(self.request.user.profile)
-        problem.allowed_languages.set(Language.objects.all())
+        problem.allowed_languages.set(Language.objects.filter(include_in_problem=True))
         problem.partial = True
+        problem.date = datetime.now()
+        result = self.save_statement(form, problem)
+        if result is not None:
+            return result
         problem.save()
         return HttpResponseRedirect(self.get_success_url())
 
@@ -764,8 +781,12 @@ class ProblemSuggest(ProblemCreate):
     def form_valid(self, form):
         self.object = problem = form.save()
         problem.suggester = self.request.user.profile
-        problem.allowed_languages.set(Language.objects.all())
+        problem.allowed_languages.set(Language.objects.filter(include_in_problem=True))
         problem.partial = True
+        problem.date = datetime.now()
+        result = self.save_statement(form, problem)
+        if result is not None:
+            return result
         problem.save()
         on_new_suggested_problem.delay(problem.code)
         return HttpResponseRedirect(self.get_success_url())
@@ -800,12 +821,34 @@ class ProblemEdit(ProblemMixin, TitleMixin, UpdateView):
         data['solution_formset'] = self.get_solution_formset()
         return data
 
+    def get_form_kwargs(self):
+        kwargs = super(ProblemEdit, self).get_form_kwargs()
+        # Due to some limitation with query set in select2
+        # We only support this if the problem is private for only
+        # 1 organization
+        if self.object.organizations.count() == 1:
+            kwargs['org_pk'] = self.object.organizations.values_list('pk', flat=True)[0]
+
+        return kwargs
+
+    def save_statement(self, form, problem):
+        statement_file = form.files.get('statement_file', None)
+        if statement_file is not None:
+            if not self.request.user.has_perm('judge.upload_file_statement'):
+                form.add_error('statement_file', 'You don\'t have permission to upload file-type statement.')
+                return self.form_invalid(form)
+            problem.pdf_url = pdf_statement_uploader(statement_file)
+
     def post(self, request, *args, **kwargs):
         self.object = self.get_object()
         form = self.get_form()
         form_edit = self.get_solution_formset()
         if form.is_valid() and form_edit.is_valid():
-            form.save()
+            problem = form.save()
+            result = self.save_statement(form, problem)
+            if result is not None:
+                return result
+            problem.save()
             form_edit.save()
             return HttpResponseRedirect(reverse('problem_detail', args=[self.object.code]))
         return self.render_to_response(self.get_context_data(**kwargs))

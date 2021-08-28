@@ -1,3 +1,5 @@
+import os
+
 from django.conf import settings
 from django.conf.urls import include, url
 from django.contrib import admin
@@ -16,13 +18,13 @@ from judge.sitemap import BlogPostSitemap, ContestSitemap, HomePageSitemap, Orga
     SolutionSitemap, UrlSitemap, UserSitemap
 from judge.views import TitledTemplateView, api, blog, comment, contests, import_freecontest, language, license, \
     mailgun, organization, preview, problem, problem_manage, ranked_submission, register, stats, status, submission, \
-    tasks, ticket, two_factor, user, widgets
+    tag, tasks, ticket, two_factor, user, widgets
 from judge.views.problem_data import ProblemDataView, ProblemSubmissionDiff, \
     problem_data_file, problem_init_view
 from judge.views.register import ActivationView, RegistrationView
 from judge.views.select2 import AssigneeSelect2View, CommentSelect2View, ContestSelect2View, \
-    ContestUserSearchSelect2View, OrganizationSelect2View, ProblemSelect2View, TicketUserSelect2View, \
-    UserSearchSelect2View, UserSelect2View
+    ContestUserSearchSelect2View, OrganizationSelect2View, OrganizationUserSelect2View, ProblemSelect2View, \
+    TagGroupSelect2View, TagSelect2View, TicketUserSelect2View, UserSearchSelect2View, UserSelect2View
 from judge.views.widgets import martor_image_uploader
 
 admin.autodiscover()
@@ -57,7 +59,7 @@ register_patterns = [
         template_name='registration/password_change_done.html',
         title=gettext_lazy('Password change successful'),
     ), name='password_change_done'),
-    url(r'^password/reset/$', auth_views.PasswordResetView.as_view(
+    url(r'^password/reset/$', user.CustomPasswordResetView.as_view(
         template_name='registration/password_reset.html',
         html_email_template_name='registration/password_reset_email.html',
         email_template_name='registration/password_reset_email.txt',
@@ -158,6 +160,19 @@ urlpatterns = [
             url('^/rescore/success/(?P<task_id>[A-Za-z0-9-]*)$', problem_manage.rescore_success,
                 name='problem_submissions_rescore_success'),
         ])),
+    ])),
+
+    url(r'^tags', include([
+        url(r'^/$', tag.TagProblemList.as_view(), name='tagproblem_list'),
+        url(r'^/create$', tag.TagProblemCreate.as_view(), name='tagproblem_create'),
+        url(r'^/random/$', tag.TagRandomProblem.as_view(), name='tagproblem_random'),
+        url(r'^/find/$', tag.TagFindProblem.as_view(), name='tagproblem_find'),
+    ])),
+
+    url(r'^tag/(?P<tagproblem>[^/]+)', include([
+        url(r'^$', tag.TagProblemDetail.as_view(), name='tagproblem_detail'),
+        url(r'^/assign$', tag.TagProblemAssign.as_view(), name='tagproblem_assign'),
+        url(r'^/$', lambda _, problem: HttpResponsePermanentRedirect(reverse('tagproblem_detail', args=[tag]))),
     ])),
 
     url(r'^submissions/', paged_list_view(submission.AllSubmissions, 'all_submissions')),
@@ -265,6 +280,10 @@ urlpatterns = [
         url(r'^/leave$', organization.LeaveOrganization.as_view(), name='leave_organization'),
         url(r'^/edit$', organization.EditOrganization.as_view(), name='edit_organization'),
         url(r'^/kick$', organization.KickUserWidgetView.as_view(), name='organization_user_kick'),
+        url(r'^/problems$', organization.ProblemListOrganization.as_view(), name='problem_list_organization'),
+        url(r'^/contests$', organization.ContestListOrganization.as_view(), name='contest_list_organization'),
+        url(r'^/problem-create$', organization.ProblemCreateOrganization.as_view(), name='problem_create_organization'),
+        url(r'^/contest-create$', organization.ContestCreateOrganization.as_view(), name='contest_create_organization'),
 
         url(r'^/request$', organization.RequestJoinOrganization.as_view(), name='request_organization'),
         url(r'^/request/(?P<rpk>\d+)$', organization.OrganizationRequestDetail.as_view(),
@@ -397,10 +416,15 @@ urlpatterns = [
 
     url(r'^judge-select2/', include([
         url(r'^profile/$', UserSelect2View.as_view(), name='profile_select2'),
+        url(r'^organization_profile/(?P<pk>\d+)/$',
+            OrganizationUserSelect2View.as_view(),
+            name='organization_profile_select2'),
         url(r'^organization/$', OrganizationSelect2View.as_view(), name='organization_select2'),
         url(r'^problem/$', ProblemSelect2View.as_view(), name='problem_select2'),
         url(r'^contest/$', ContestSelect2View.as_view(), name='contest_select2'),
         url(r'^comment/$', CommentSelect2View.as_view(), name='comment_select2'),
+        url(r'^tag/$', TagSelect2View.as_view(), name='tag_select2'),
+        url(r'^taggroup/$', TagGroupSelect2View.as_view(), name='taggroup_select2'),
     ])),
 
     url(r'^tasks/', include([
@@ -436,3 +460,9 @@ if 'newsletter' in settings.INSTALLED_APPS:
     urlpatterns.append(url(r'^newsletter/', include('newsletter.urls')))
 if 'impersonate' in settings.INSTALLED_APPS:
     urlpatterns.append(url(r'^impersonate/', include('impersonate.urls')))
+
+try:
+    with open(os.path.join(os.path.dirname(__file__), 'local_urls.py')) as f:
+        exec(f.read(), globals())
+except IOError:
+    pass

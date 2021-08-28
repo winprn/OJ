@@ -12,11 +12,13 @@ from django.core.validators import RegexValidator
 from django.db import models
 from django.db.models import F, Max, Sum
 from django.urls import reverse
+from django.utils import timezone
 from django.utils.encoding import force_bytes
 from django.utils.functional import cached_property
 from django.utils.timezone import now
 from django.utils.translation import gettext_lazy as _
 from fernet_fields import EncryptedCharField
+from pyotp.utils import strings_equal
 from sortedm2m.fields import SortedManyToManyField
 
 from judge.models.choices import ACE_THEMES, MATH_ENGINES_CHOICES, TIMEZONE
@@ -77,7 +79,16 @@ class Organization(models.Model):
             self.member_count = member_count
             self.save(update_fields=['member_count'])
 
+    @cached_property
+    def admins_list(self):
+        return self.admins.all()
+
+    def is_admin(self, user):
+        return user in self.admins_list
+
     def __contains__(self, item):
+        if item is None:
+            return False
         if isinstance(item, int):
             return self.members.filter(id=item).exists()
         elif isinstance(item, Profile):
@@ -121,14 +132,14 @@ class Profile(models.Model):
     organizations = SortedManyToManyField(Organization, verbose_name=_('organization'), blank=True,
                                           related_name='members', related_query_name='member')
     display_rank = models.CharField(max_length=10, default='user', verbose_name=_('display rank'),
-                                    choices=(
-                                        ('user', _('Normal User')),
-                                        ('setter', _('Problem Setter')),
-                                        ('admin', _('Admin'))))
+                                    choices=settings.VNOJ_DISPLAY_RANKS)
     mute = models.BooleanField(verbose_name=_('comment mute'), help_text=_('Some users are at their best when silent.'),
                                default=False)
     is_unlisted = models.BooleanField(verbose_name=_('unlisted user'), help_text=_('User will not be ranked.'),
                                       default=False)
+    allow_tagging = models.BooleanField(verbose_name=_('Allow tagging'),
+                                        help_text=_('User will be allowed to tag problems.'),
+                                        default=False)
     rating = models.IntegerField(null=True, default=None)
     user_script = models.TextField(verbose_name=_('user script'), default='', blank=True, max_length=65536,
                                    help_text=_('User-defined JavaScript for site customization.'))
@@ -152,6 +163,7 @@ class Profile(models.Model):
                                                RegexValidator(r'^(\[\])?$|^\[("[A-Z0-9]{16}", *)*"[A-Z0-9]{16}"\]$',
                                                               _('Scratch codes must be empty or a JSON array of \
                                                                  16-character base32 codes'))])
+    last_totp_timecode = models.IntegerField(verbose_name=_('last TOTP timecode'), default=0)
     api_token = models.CharField(max_length=64, null=True, verbose_name=_('API token'),
                                  help_text=_('64 character hex-encoded API access token'),
                                  validators=[RegexValidator('^[a-f0-9]{64}$',
@@ -267,7 +279,15 @@ class Profile(models.Model):
     update_contest.alters_data = True
 
     def check_totp_code(self, code):
-        return pyotp.TOTP(self.totp_key).verify(code, valid_window=settings.DMOJ_TOTP_TOLERANCE_HALF_MINUTES)
+        totp = pyotp.TOTP(self.totp_key)
+        now_timecode = totp.timecode(timezone.now())
+        min_timecode = max(self.last_totp_timecode + 1, now_timecode - settings.DMOJ_TOTP_TOLERANCE_HALF_MINUTES)
+        for timecode in range(min_timecode, now_timecode + settings.DMOJ_TOTP_TOLERANCE_HALF_MINUTES + 1):
+            if strings_equal(code, totp.generate_otp(timecode)):
+                self.last_totp_timecode = timecode
+                self.save(update_fields=['last_totp_timecode'])
+                return True
+        return False
 
     check_totp_code.alters_data = True
 

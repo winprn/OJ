@@ -102,7 +102,7 @@
                             $file_name = $file_name.split('/').pop()
                             $file_ext = $file_name.split('.').pop()
                             if (!(['cpp', 'py'].includes($file_ext))) {
-                                alert("Expected checker's extension must be in [cpp, py], found '" + $file_ext + "'");
+                                alert("{{ _('Expected checker\'s extension must be in [cpp, py], found ') }}'" + $file_ext + "'");
                             }
                             else {
                                 $lang = $file_ext.toUpperCase();
@@ -143,6 +143,23 @@
                 }).change();
             })();
 
+            var $grader = $('#id_problem-data-grader');
+            var $custom_grader_file = $('#id_problem-data-custom_grader');
+            var $custom_header_file = $('#id_problem-data-custom_header');
+            var $grader_args = $('#id_problem-data-grader_args');
+
+            var $tr_custom_grader_file = $custom_grader_file.parent().parent();
+            var $tr_custom_header_file = $custom_header_file.parent().parent();
+            var $tr_grader_args = $grader_args.parent().parent();
+
+            $grader.change(function () {
+                $tr_custom_grader_file.toggle(!$grader.val().startsWith('standard') &&
+                                              !$grader.val().startsWith('output_only') &&
+                                              !!$grader.val());
+                $tr_custom_header_file.toggle($grader.val().startsWith('signature'));
+                $tr_grader_args.toggle($grader.val().startsWith('signature'));
+            }).change();
+
             $td = $checker.parent();
             var $sample = $("<a/>",{
                 text: "{{_('Instruction')}}",
@@ -150,7 +167,16 @@
                 target: "_blank",
                 href: "/custom_checkers"
             }).appendTo($td);
-
+            
+            var $file_test = $('#id_problem-data-zipfile');
+            $("<br>").appendTo($file_test.parent());
+            $("<input/>", {
+                type: "submit",
+                value: "{{ _('Please press this button if you have just updated the zip data') }}",
+                class: "button",
+                style: "display: inherit",
+                id: "submit-button",
+            }).appendTo($file_test.parent());
 
             function swap_row($a, $b) {
                 var $a_order = $a.find('input[id$=order]'), $b_order = $b.find('input[id$=order]');
@@ -258,7 +284,7 @@
                 return false;
             });
 
-            $('a#fill-testcases').click(function () {
+            function fill_testcases() {
                 var inFiles = [], outFiles = [];
                 var inputExts = [".in", ".inp"];
                 var outputExts = [".out", ".ou", ".ans", ".ok"];
@@ -271,11 +297,11 @@
                     }
                 }
                 if (inFiles.length == 0) {
-                    alert("No input/output files. Make sure your files' suffices are .in(p)/.out/.ans/.ok");
+                    alert("{{_('No input/output files. Make sure your files\' suffices are .in(p)/.out/.ans/.ok')}}");
                     return false;
                 }
                 if (inFiles.length != outFiles.length) {
-                    alert(`The number of input files (${inFiles.length}) do not match the number of output files (${outFiles.length})!`);
+                    alert(`{{_('The number of input files (${inFiles.length}) do not match the number of output files (${outFiles.length})!')}}`);
                     return false;
                 }
                 // add boxes
@@ -289,21 +315,12 @@
                 for (var i = 0; i < outFiles.length; i++) {
                     $("#id_cases-" + i + "-output_file").val(outFiles[i]).change();
                 }
-                // add points
-                var problem_type = window.prompt("Problem type (oi or icpc).");
-                if (problem_type.toLowerCase()== "icpc") {
-                    for (i = 0; i + 1 < inFiles.length; i++) {
-                        $("#id_cases-" + i + "-points").val("0").change();
-                    }
-                    $("#id_cases-" + (inFiles.length - 1) + "-points").val("100").change();
-                }
-                else {
-                    for (i = 0; i < inFiles.length; i++) {
-                        $("#id_cases-" + i + "-points").val("1").change();
-                    }
+                
+                for (i = 0; i < inFiles.length; i++) {
+                    $("#id_cases-" + i + "-points").val("1").change();
                 }
                 return false;
-            });
+            };
 
             var oldIndex;
             $table.sortable({
@@ -345,6 +362,10 @@
                     $("input[name$='DELETE']").attr('checked', false);
                 }
             });
+            if (parseInt($total.val()) == 0 && window.valid_files.length) {
+                console.log("Filling testcase...");
+                fill_testcases();
+            }
         }).change();
     </script>
 {% endblock %}
@@ -438,6 +459,17 @@
 {% endblock %}
 
 {% block header %}
+    {% if problem.is_organization_private %}
+        <span class="organization-tags">
+            {% for org in problem.organizations.all() %}
+                <span class="organization-tag">
+                    <a href="{{ org.get_absolute_url() }}">
+                        <i class="fa fa-lock"></i> {{ org.name }}
+                    </a>
+                </span>
+            {% endfor %}
+        </span>
+    {% endif %}
     {% if data_form.instance.has_yml() %}
         <div class="title-line-action">
             [<a href="{{ url('problem_data_init', problem.code) }}">{{ _('View YAML') }}</a>]
@@ -456,17 +488,7 @@
         {{ cases_formset.management_form }}
         <table class="table">
             {{ data_form.as_table() }}
-            <th>
-                <label>Autofill testcases:</label>
-            </th>
-            <td>
-                <a id="fill-testcases" href="#">
-                    <i class="fa fa-circle"></i>
-                    Fill testcases
-                </a>
-            </td>
         </table>
-        <input type="submit" style="float:right" value="{{ _('Please press this button if you have just updated the zip data') }}" class="button" id="submit-button">
         <table id="case-table" class="table">
             <thead>
             <tr>

@@ -230,6 +230,15 @@ class ContestMixin(object):
 class ContestDetail(ContestMixin, TitleMixin, CommentedDetailView):
     template_name = 'contest/contest.html'
 
+    def is_comment_locked(self):
+        if self.object.use_clarifications:
+            now = timezone.now()
+            if self.object.is_in_contest(self.request.user) or \
+                    (self.object.start_time <= now and now <= self.object.end_time):
+                return True
+
+        return super(ContestDetail, self).is_comment_locked()
+
     def get_comment_page(self):
         return 'c:%s' % self.object.key
 
@@ -261,8 +270,24 @@ class ContestDetail(ContestMixin, TitleMixin, CommentedDetailView):
                 p.ac_rate = contest_p['user_count'] / contest_p['submission_count'] * 100
             else:
                 p.ac_rate = 0
-        context['contest_has_public_editorials'] = any(
-            problem.is_public and problem.has_public_editorial for problem in context['contest_problems']
+
+        context['metadata'] = {
+            'has_public_editorials': any(
+                problem.is_public and problem.has_public_editorial for problem in context['contest_problems']
+            ),
+        }
+        context['metadata'].update(
+            **self.object.contest_problems
+            .annotate(
+                partials_enabled=F('partial').bitand(F('problem__partial')),
+                pretests_enabled=F('is_pretested').bitand(F('contest__run_pretests_only')),
+            )
+            .aggregate(
+                has_partials=Sum('partials_enabled'),
+                has_pretests=Sum('pretests_enabled'),
+                has_submission_cap=Sum('max_submissions'),
+                problem_count=Count('id'),
+            ),
         )
 
         clarifications = ProblemClarification.objects.filter(problem__in=self.object.problems.all())
@@ -639,10 +664,15 @@ def base_contest_ranking_list(contest, problems, queryset):
             queryset.select_related('user__user', 'rating').defer('user__about', 'user__organizations__about')]
 
 
+def base_contest_ranking_queryset(contest):
+    return contest.users.filter(virtual__gt=ContestParticipation.SPECTATE) \
+        .prefetch_related('user__organizations') \
+        .annotate(submission_count=Count('submission')) \
+        .order_by('is_disqualified', '-score', 'cumtime', 'tiebreaker', '-submission_count')
+
+
 def contest_ranking_list(contest, problems):
-    return base_contest_ranking_list(contest, problems, contest.users.filter(virtual__gt=ContestParticipation.SPECTATE)
-                                     .prefetch_related('user__organizations')
-                                     .order_by('is_disqualified', '-score', 'cumtime', 'tiebreaker'))
+    return base_contest_ranking_list(contest, problems, base_contest_ranking_queryset(contest))
 
 
 def get_contest_ranking_list(request, contest, participation=None, ranking_list=contest_ranking_list,
@@ -707,6 +737,7 @@ class ContestRankingBase(ContestMixin, TitleMixin, DetailView):
 
 class ContestRanking(ContestRankingBase):
     tab = 'ranking'
+    show_virtual = False
 
     def get_title(self):
         return _('%s Rankings') % self.object.name
@@ -720,11 +751,25 @@ class ContestRanking(ContestRankingBase):
                 ranker=lambda users, key: ((_('???'), user) for user in users),
             )
 
+        if 'show_virtual' in self.request.GET:
+            self.show_virtual = self.request.session['show_virtual'] \
+                              = self.request.GET.get('show_virtual').lower() == 'true'
+        else:
+            self.show_virtual = self.request.session.get('show_virtual', False)
+
+        if not self.show_virtual:
+            queryset = base_contest_ranking_queryset(self.object).filter(virtual=ContestParticipation.LIVE)
+            return get_contest_ranking_list(
+                self.request, self.object,
+                ranking_list=partial(base_contest_ranking_list, queryset=queryset),
+            )
+
         return get_contest_ranking_list(self.request, self.object)
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         context['has_rating'] = self.object.ratings.exists()
+        context['show_virtual'] = self.show_virtual
         return context
 
 
@@ -881,7 +926,7 @@ class ContestTagDetail(TitleMixin, ContestTagDetailAjax):
 
 
 class CreateContest(PermissionRequiredMixin, TitleMixin, CreateView):
-    template_name = 'contest/edit.html'
+    template_name = 'contest/create.html'
     model = Contest
     form_class = ContestForm
     permission_required = 'judge.add_contest'
@@ -902,12 +947,17 @@ class CreateContest(PermissionRequiredMixin, TitleMixin, CreateView):
         data['contest_problem_formset'] = self.get_contest_problem_formset()
         return data
 
+    def save_contest_form(self, form):
+        self.object = form.save()
+        self.object.authors.add(self.request.profile)
+        self.object.save()
+
     def post(self, request, *args, **kwargs):
         self.object = None
         form = ContestForm(request.POST or None)
         form_set = self.get_contest_problem_formset()
         if form.is_valid() and form_set.is_valid():
-            self.object = form.save()
+            self.save_contest_form(form)
             for problem in form_set.save(commit=False):
                 problem.contest = self.object
                 problem.save()
@@ -926,6 +976,16 @@ class EditContest(ContestMixin, TitleMixin, UpdateView):
         if not contest.is_editable_by(self.request.user):
             raise PermissionDenied()
         return contest
+
+    def get_form_kwargs(self):
+        kwargs = super(EditContest, self).get_form_kwargs()
+        # Due to some limitation with query set in select2
+        # We only support this if the contest is private for only
+        # 1 organization
+        if self.object.organizations.count() == 1:
+            kwargs['org_pk'] = self.object.organizations.values_list('pk', flat=True)[0]
+
+        return kwargs
 
     def get_title(self):
         return _('Editing contest {0}').format(self.object.name)

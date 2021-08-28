@@ -21,8 +21,8 @@ from judge.models.runtime import Language
 from judge.user_translations import gettext as user_gettext
 from judge.utils.raw_sql import RawSQLColumn, unique_together_left_join
 
-__all__ = ['ProblemGroup', 'ProblemType', 'Problem', 'ProblemTranslation', 'ProblemClarification',
-           'License', 'Solution', 'TranslatedProblemQuerySet', 'TranslatedProblemForeignKeyQuerySet']
+__all__ = ['ProblemGroup', 'ProblemType', 'Problem', 'ProblemTranslation', 'ProblemClarification', 'License',
+           'Solution', 'SubmissionSourceAccess', 'TranslatedProblemQuerySet', 'TranslatedProblemForeignKeyQuerySet']
 
 
 def disallowed_characters_validator(text):
@@ -101,7 +101,21 @@ class TranslatedProblemForeignKeyQuerySet(QuerySet):
         return queryset.annotate(**kwargs)
 
 
+class SubmissionSourceAccess:
+    ALWAYS = 'A'
+    SOLVED = 'S'
+    ONLY_OWN = 'O'
+    FOLLOW = 'F'
+
+
 class Problem(models.Model):
+    SUBMISSION_SOURCE_ACCESS = (
+        (SubmissionSourceAccess.FOLLOW, _('Follow global setting')),
+        (SubmissionSourceAccess.ALWAYS, _('Always visible')),
+        (SubmissionSourceAccess.SOLVED, _('Visible if problem solved')),
+        (SubmissionSourceAccess.ONLY_OWN, _('Only own submissions')),
+    )
+
     code = models.CharField(max_length=32, verbose_name=_('problem code'), unique=True,
                             validators=[RegexValidator('^[a-z0-9_]+$', _('Problem code must be ^[a-z0-9_]+$'))],
                             help_text=_('A short, unique code for the problem, '
@@ -109,9 +123,9 @@ class Problem(models.Model):
     name = models.CharField(max_length=100, verbose_name=_('problem name'), db_index=True,
                             help_text=_('The full name of the problem, '
                                         'as shown in the problem list.'))
-    pdf_url = models.URLField(max_length=200, verbose_name=_('PDF statement URL'), blank=True,
-                              help_text=_('URL to PDF statement. The PDF file must be embeddable (Mobile web browsers'
-                                          'may not support embedding). Fallback included.'))
+    pdf_url = models.CharField(max_length=200, verbose_name=_('PDF statement URL'), blank=True,
+                               help_text=_('URL to PDF statement. The PDF file must be embeddable (Mobile web browsers'
+                                           'may not support embedding). Fallback included.'))
     source = models.CharField(max_length=200, verbose_name=_('Problem source'), db_index=True, blank=True,
                               help_text=_('Source of problem. Please credit the source of the problem'
                                           'if it is not yours'))
@@ -167,6 +181,9 @@ class Problem(models.Model):
                                      help_text=_('The number of users who solved the problem.'))
     ac_rate = models.FloatField(verbose_name=_('solve rate'), default=0)
     is_full_markup = models.BooleanField(verbose_name=_('allow full markdown access'), default=False)
+    submission_source_visibility_mode = models.CharField(verbose_name=_('submission source visibility'), max_length=1,
+                                                         default=SubmissionSourceAccess.FOLLOW,
+                                                         choices=SUBMISSION_SOURCE_ACCESS)
 
     objects = TranslatedProblemQuerySet.as_manager()
     tickets = GenericRelation('Ticket')
@@ -206,6 +223,8 @@ class Problem(models.Model):
     def is_editable_by(self, user):
         if not user.is_authenticated:
             return False
+        if user.has_perm('judge.suggest_new_problem') and self.is_suggesting:
+            return True
         if user.has_perm('judge.edit_all_problem') or user.has_perm('judge.edit_public_problem') and self.is_public:
             return True
         return user.has_perm('judge.edit_own_problem') and \
@@ -250,7 +269,7 @@ class Problem(models.Model):
             return True
 
         # If user is a suggester
-        if user.has_perm('judge.suggest_new_problem'):
+        if user.has_perm('judge.suggest_new_problem') and self.is_suggesting:
             return True
 
         # If user is a tester.
@@ -377,6 +396,16 @@ class Problem(models.Model):
     def clarifications(self):
         return ProblemClarification.objects.filter(problem=self)
 
+    @cached_property
+    def submission_source_visibility(self):
+        if self.submission_source_visibility_mode == SubmissionSourceAccess.FOLLOW:
+            return {
+                'all': SubmissionSourceAccess.ALWAYS,
+                'all-solved': SubmissionSourceAccess.SOLVED,
+                'only-own': SubmissionSourceAccess.ONLY_OWN,
+            }[settings.DMOJ_SUBMISSION_SOURCE_VISIBILITY]
+        return self.submission_source_visibility_mode
+
     def update_stats(self):
         all_queryset = self.submission_set.filter(user__is_unlisted=False)
         ac_queryset = all_queryset.filter(points__gte=self.points, result='AC')
@@ -457,11 +486,13 @@ class Problem(models.Model):
         permissions = (
             ('see_private_problem', _('See hidden problems')),
             ('edit_own_problem', _('Edit own problems')),
+            ('create_organization_problem', _('Create organization problem')),
             ('edit_all_problem', _('Edit all problems')),
             ('edit_public_problem', _('Edit all public problems')),
             ('suggest_new_problem', _('Suggest new problem')),
             ('problem_full_markup', _('Edit problems with full markup')),
             ('clone_problem', _('Clone problem')),
+            ('upload_file_statement', _('Upload file-type statement')),
             ('change_public_visibility', _('Change is_public field')),
             ('change_manually_managed', _('Change is_manually_managed field')),
             ('see_organization_problem', _('See organization-private problems')),
