@@ -110,6 +110,9 @@ class OJAPI:
         except Problem.DoesNotExist:
             return None
 
+        if problem.organizations.exists():
+            return None
+
         data = {
             'index': problem.code,
             'title': problem.name,
