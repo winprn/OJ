@@ -28,6 +28,13 @@ if (!String.prototype.endsWith) {
     };
 }
 
+$(function() {
+    const theme = localStorage.getItem('theme');
+    if (theme === null) theme = "light";
+
+    document.body.className = theme;
+})
+
 // http://stackoverflow.com/a/1060034/1090657
 $(function () {
     var hidden = 'hidden';
@@ -57,8 +64,9 @@ $(function () {
         evt = evt || window.event;
         if (evt.type in evtMap)
             document.body.className = evtMap[evt.type];
-        else
+        else {
             document.body.className = this[hidden] ? 'window-hidden' : 'window-visible';
+        }
 
         if ('$' in window)
             $(window).trigger('dmoj:' + document.body.className);
