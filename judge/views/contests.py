@@ -327,6 +327,76 @@ class ContestDetail(ContestMixin, TitleMixin, CommentedDetailView):
 
         return context
 
+class ContestAllProblems(ContestMixin, TitleMixin, CommentedDetailView):
+    template_name = 'contest/contest-all-problems.html'
+
+    def is_comment_locked(self):
+        if self.object.use_clarifications:
+            now = timezone.now()
+            if self.object.is_in_contest(self.request.user) or \
+                    (self.object.start_time <= now and now <= self.object.end_time):
+                return True
+
+        return super(ContestAllProblems, self).is_comment_locked()
+
+    def get_comment_page(self):
+        return 'c:%s' % self.object.key
+
+    def get_title(self):
+        return self.object.name
+
+    def get_context_data(self, **kwargs):
+        context = super(ContestAllProblems, self).get_context_data(**kwargs)
+        context['contest_problems'] = Problem.objects.filter(contests__contest=self.object) \
+            .order_by('contests__order') \
+            .annotate(has_public_editorial=Case(
+                When(solution__is_public=True, solution__publish_on__lte=timezone.now(), then=True),
+                default=False,
+                output_field=BooleanField(),
+            )) \
+            .add_i18n_name(self.request.LANGUAGE_CODE)
+            
+        context['all_problems'] = Problem.objects.filter(contests__contest=self.object)
+
+        # convert to problem points in contest instead of actual points
+        points_list = self.object.contest_problems.values_list('points').order_by('order')
+        for idx, p in enumerate(context['contest_problems']):
+            p.points = points_list[idx][0]
+
+        context['metadata'] = {
+            'has_public_editorials': any(
+                problem.is_public and problem.has_public_editorial for problem in context['contest_problems']
+            ),
+        }
+        context['metadata'].update(
+            **self.object.contest_problems
+            .annotate(
+                partials_enabled=F('partial').bitand(F('problem__partial')),
+                pretests_enabled=F('is_pretested').bitand(F('contest__run_pretests_only')),
+            )
+            .aggregate(
+                has_partials=Sum('partials_enabled'),
+                has_pretests=Sum('pretests_enabled'),
+                has_submission_cap=Sum('max_submissions'),
+                problem_count=Count('id'),
+            ),
+        )
+
+        clarifications = ProblemClarification.objects.filter(problem__in=self.object.problems.all())
+        context['has_clarifications'] = clarifications.count() > 0
+        context['clarifications'] = clarifications.order_by('-date')
+        announcements = ContestAnnouncement.objects.filter(contest=self.object)
+        context['has_announcements'] = announcements.count() > 0
+        context['announcements'] = announcements.order_by('-date')
+        context['can_announce'] = self.object.is_editable_by(self.request.user)
+
+        authenticated = self.request.user.is_authenticated
+        context['completed_problem_ids'] = user_completed_ids(self.request.profile) if authenticated else []
+        context['attempted_problem_ids'] = user_attempted_ids(self.request.profile) if authenticated else []
+
+        context['can_download_data'] = bool(settings.DMOJ_CONTEST_DATA_DOWNLOAD)
+
+        return context
 
 class ContestClone(ContestMixin, PermissionRequiredMixin, TitleMixin, SingleObjectFormView):
     title = gettext_lazy('Clone Contest')
