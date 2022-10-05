@@ -22,10 +22,17 @@
     {% set in_contest = contest.is_in_contest(request.user) %}
     {% if in_contest or contest.ended or request.user.is_superuser or is_editor or is_tester %}
         {% block description %}
-                {% for problem in all_problems %}
+                {% for problem in contest_problems %}
                     <div style="display: flex; flex-direction: column; align-items: center;">
                         <div class="content-description" style="width: 70%;">
-                            <h2 style="margin-top: 0.5em;">{{ problem.name }}</h2>
+                            <div class="problem_container">
+                                <h2 style="margin-top: 0.5em;">{{ problem.name }}</h2>
+                                <div>
+                                    <span><strong>Time limit:</strong> {{ problem.time_limit }} /</span>
+                                    <span><strong>Memory limit:</strong> {{ problem.memory_limit|kbsimpleformat }}</span>
+                                    <p><strong>Point:</strong> {{ problem.points }}</p>
+                                </div>
+                            </div>
                             {% if problem.is_suggesting %}
                                 <div class="alert alert-warning alert-dismissable">
                                     <a class="close">x</a>
