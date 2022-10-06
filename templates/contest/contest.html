@@ -265,7 +265,7 @@
             </table>
 
             {% if request.user.is_superuser %}
-                <a href="{{ url('contest_all_problems', contest.key) }}">{{ _('All_problems') }}</a>
+                <a href="{{ url('contest_all_problems', contest.key) }}">{{ _('All problems') }}</a>
             {% endif %}
         </div>
         {% if has_announcements or can_edit %}

@@ -5082,7 +5082,7 @@ msgid "Clarifications"
 msgstr "Làm rõ"
 
 #: templates/contest/contest.html:268
-msgid "All_problems"
+msgid "All problems"
 msgstr "Tất cả bài tập"
 
 #: templates/contest/create-announcement.html:18

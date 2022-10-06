@@ -4986,8 +4986,8 @@ msgid "Clarifications"
 msgstr ""
 
 #: templates/contest/contest.html:268
-msgid "All_problems"
-msgstr "All problems"
+msgid "All problems"
+msgstr ""
 
 #: templates/contest/create-announcement.html:18
 msgid "Announce"
