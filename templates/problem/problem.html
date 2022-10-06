@@ -351,6 +351,14 @@
 
 {% block description %}
     <iframe name="raw_problem" id="raw_problem"></iframe>
+    {% if problem.is_suggesting %}
+        <div class="alert alert-warning alert-dismissable">
+            <a class="close">x</a>
+            <b>{{ _('This problem is only a suggestion!') }}</b>
+            <br>
+            {{ _('This problem cannot be accessed by normal users until it is approved by an admin or staff. Please make sure that all the data for this problem is correct.') }}
+        </div>
+    {% endif %}
     {% include "problem/problem-detail.html" %}
 {% endblock %}
 
