@@ -263,10 +263,8 @@
                 {% endfor %}
                 </tbody>
             </table>
-
-            {% if request.user.is_superuser %}
-                <a href="{{ url('contest_all_problems', contest.key) }}">{{ _('All problems') }}</a>
-            {% endif %}
+            
+            <a href="{{ url('contest_all_problems', contest.key) }}">{{ _('All problems') }}</a>
         </div>
         {% if has_announcements or can_edit %}
         <div class="contest-clartifications">
