@@ -14,10 +14,11 @@ from django.core.files import File
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.urls import reverse
-from django.utils import translation
+from django.utils import timezone, translation
 from lxml import etree as ET
 
-from judge.models import Language, Problem, ProblemData, ProblemGroup, ProblemTestCase, ProblemTranslation, ProblemType
+from judge.models import Language, Problem, ProblemData, ProblemGroup, ProblemTestCase, ProblemTranslation, \
+    ProblemType, Profile, Solution
 from judge.utils.problem_data import ProblemDataCompiler
 from judge.views.widgets import django_uploader
 
@@ -248,6 +249,12 @@ def pandoc_tex_to_markdown(tex):
 
 
 def parse_statements(problem_meta, root, package):
+    # Set default values
+    problem_meta['name'] = ''
+    problem_meta['description'] = ''
+    problem_meta['translations'] = []
+    problem_meta['tutorial'] = ''
+
     image_cache = {}
 
     def save_image(image_path):
@@ -325,14 +332,12 @@ def parse_statements(problem_meta, root, package):
     if len(statements) == 0:
         print('Statement not found! Would you like to skip statement (y/n)? ', end='', flush=True)
         if input().lower() in ['y', 'yes']:
-            problem_meta['name'] = ''
-            problem_meta['description'] = ''
-            problem_meta['translations'] = []
             return
 
         raise CommandError('statement not found')
 
     translations = []
+    tutorials = []
     for statement in statements:
         language = statement.get('language', 'unknown')
         statement_folder = os.path.dirname(statement.get('path'))
@@ -349,6 +354,15 @@ def parse_statements(problem_meta, root, package):
             'description': description,
         })
 
+        tutorial = problem_properties['tutorial']
+        if isinstance(tutorial, str) and tutorial != '':
+            print(f'Converting tutorial in language {language} to Markdown')
+            tutorial = pandoc_tex_to_markdown(tutorial)
+            tutorials.append({
+                'language': language,
+                'tutorial': tutorial,
+            })
+
     if len(translations) > 1:
         languages = [t['language'] for t in translations]
         print('Multilingual statements found:', languages)
@@ -356,7 +370,13 @@ def parse_statements(problem_meta, root, package):
     else:
         main_language = translations[0]['language']
 
-    problem_meta['translations'] = []
+    if len(tutorials) > 1:
+        languages = [t['language'] for t in tutorials]
+        print('Multilingual tutorials found:', languages)
+        main_language = input_choice('Please select one as the sole tutorial: ', languages)
+        problem_meta['tutorial'] = next(t for t in tutorials if t['language'] == main_language)['tutorial']
+    elif len(tutorials) > 0:
+        problem_meta['tutorial'] = tutorials[0]['tutorial']
 
     for t in translations:
         language = t['language']
@@ -396,6 +416,7 @@ def create_problem(problem_meta):
     )
     problem.save()
     problem.allowed_languages.set(Language.objects.filter(include_in_problem=True))
+    problem.authors.set(problem_meta['authors'])
     problem.types.set([ProblemType.objects.order_by('id').first()])  # Uncategorized
     problem.save()
 
@@ -405,6 +426,14 @@ def create_problem(problem_meta):
             language=tran['language'],
             name=tran['name'],
             description=tran['description'],
+        ).save()
+
+    if problem_meta['tutorial'] != '':
+        Solution(
+            problem=problem,
+            is_public=False,
+            publish_on=timezone.now(),
+            content=problem_meta['tutorial'],
         ).save()
 
     with open(problem_meta['zipfile'], 'rb') as f:
@@ -480,6 +509,7 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument('package', help='path to package in zip format')
         parser.add_argument('code', help='problem code')
+        parser.add_argument('--authors', help='VNOI username of author of the problem', nargs='+')
 
     def handle(self, *args, **options):
         # Force using English
@@ -503,10 +533,21 @@ class Command(BaseCommand):
 
         root = ET.fromstring(package.read('problem.xml'))
 
+        problem_authors_args = options['authors'] or []
+        problem_authors = []
+        for username in problem_authors_args:
+            try:
+                profile = Profile.objects.get(user__username=username)
+            except Profile.DoesNotExist:
+                raise CommandError(f'user {username} does not exist')
+
+            problem_authors.append(profile)
+
         # A dictionary to hold all problem information.
         problem_meta = {}
         problem_meta['code'] = problem_code
         problem_meta['tmp_dir'] = tempfile.TemporaryDirectory()
+        problem_meta['authors'] = problem_authors
 
         try:
             parse_checker(problem_meta, root, package)
