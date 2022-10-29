@@ -149,8 +149,8 @@ class ProblemDataCompiler(object):
                 if checker_ext == 'py':
                     return custom_checker_path[1]
 
-                if checker_ext != 'cpp' and checker_ext != 'pas':
-                    raise ProblemDataError(_("Why don't you use a cpp/pas/py checker?"))
+                if checker_ext not in ['cpp', 'pas', 'java']:
+                    raise ProblemDataError(_("Why don't you use a cpp/pas/py/java checker?"))
                 # the cpp checker will be handled
                 # right below here, outside of this scope
 
@@ -295,7 +295,7 @@ class ProblemDataCompiler(object):
                 case.save(update_fields=('checker_args', 'input_file', 'output_file'))
             elif case.type == 'E':
                 if not batch:
-                    raise ProblemDataError(_('Attempt to end batch outside of one in case #%d') % i)
+                    raise ProblemDataError(_('Attempt to end batch outside of one in case #%d.') % i)
                 case.is_pretest = batch['is_pretest']
                 case.input_file = ''
                 case.output_file = ''

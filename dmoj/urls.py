@@ -56,12 +56,7 @@ register_patterns = [
         template_name='registration/password_change_done.html',
         title=_('Password change successful'),
     ), name='password_change_done'),
-    path('password/reset/', user.CustomPasswordResetView.as_view(
-        template_name='registration/password_reset.html',
-        html_email_template_name='registration/password_reset_email.html',
-        email_template_name='registration/password_reset_email.txt',
-        title=_('Password reset'),
-    ), name='password_reset'),
+    path('password/reset/', user.CustomPasswordResetView.as_view(), name='password_reset'),
     re_path(r'^password/reset/confirm/(?P<uidb64>[0-9A-Za-z]+)-(?P<token>.+)/$',
             auth_views.PasswordResetConfirmView.as_view(
                 template_name='registration/password_reset_confirm.html',
@@ -201,6 +196,7 @@ urlpatterns = [
         path('', user.UserAboutPage.as_view(), name='user_page'),
         path('/ban', user.UserBan.as_view(), name='user_ban'),
         path('/blog/', paged_list_view(user.UserBlogPage, 'user_blog')),
+        path('/comment/', paged_list_view(user.UserCommentPage, 'user_comment')),
         path('/solved/', include([
             path('', user.UserProblemsPage.as_view(), name='user_problems'),
             path('ajax', user.UserPerformancePointsAjax.as_view(), name='user_pp_ajax'),
@@ -357,7 +353,6 @@ urlpatterns = [
         path('rejudge', widgets.rejudge_submission, name='submission_rejudge'),
         path('single_submission', submission.single_submission, name='submission_single_query'),
         path('submission_testcases', submission.SubmissionTestCaseQuery.as_view(), name='submission_testcases_query'),
-        path('detect_timezone', widgets.DetectTimezone.as_view(), name='detect_timezone'),
         path('status-table', status.status_table, name='status_table'),
 
         path('template', problem.LanguageTemplateAjax.as_view(), name='language_template_ajax'),

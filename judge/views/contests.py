@@ -28,7 +28,7 @@ from django.utils.safestring import mark_safe
 from django.utils.timezone import make_aware
 from django.utils.translation import gettext as _, gettext_lazy
 from django.views.generic import FormView, ListView, TemplateView
-from django.views.generic.detail import BaseDetailView, DetailView, SingleObjectMixin, View
+from django.views.generic.detail import DetailView, SingleObjectMixin, View
 from django.views.generic.edit import CreateView, UpdateView
 from django.views.generic.list import BaseListView
 from icalendar import Calendar as ICalendar, Event
@@ -351,6 +351,31 @@ class ContestAllProblems(ContestMixin, TitleMixin, DetailView):
 
         return context
 
+class ContestAllProblems(ContestMixin, TitleMixin, DetailView):
+    template_name = 'contest/contest-all-problems.html'
+
+    def get_title(self):
+        return self.object.name
+
+    def get_context_data(self, **kwargs):
+        context = super(ContestAllProblems, self).get_context_data(**kwargs)
+        context['contest_problems'] = Problem.objects.filter(contests__contest=self.object) \
+            .order_by('contests__order') \
+            .annotate(has_public_editorial=Case(
+                When(solution__is_public=True, solution__publish_on__lte=timezone.now(), then=True),
+                default=False,
+                output_field=BooleanField(),
+            )) \
+            .add_i18n_name(self.request.LANGUAGE_CODE)
+
+        # convert to problem points in contest instead of actual points
+        points_list = self.object.contest_problems.values_list('points').order_by('order')
+        for idx, p in enumerate(context['contest_problems']):
+            p.points = points_list[idx][0]
+
+        return context
+
+
 class ContestClone(ContestMixin, PermissionRequiredMixin, TitleMixin, SingleObjectFormView):
     title = gettext_lazy('Clone Contest')
     template_name = 'contest/clone.html'
@@ -433,7 +458,7 @@ class ContestAccessCodeForm(forms.Form):
         self.fields['access_code'].widget.attrs.update({'autocomplete': 'off'})
 
 
-class ContestJoin(LoginRequiredMixin, ContestMixin, BaseDetailView):
+class ContestJoin(LoginRequiredMixin, ContestMixin, SingleObjectMixin, View):
     def get(self, request, *args, **kwargs):
         self.object = self.get_object()
         return self.ask_for_access_code()
@@ -528,7 +553,7 @@ class ContestJoin(LoginRequiredMixin, ContestMixin, BaseDetailView):
         })
 
 
-class ContestLeave(LoginRequiredMixin, ContestMixin, BaseDetailView):
+class ContestLeave(LoginRequiredMixin, ContestMixin, SingleObjectMixin, View):
     def dispatch(self, request, *args, **kwargs):
         if request.method != 'POST':
             return HttpResponseForbidden()
@@ -919,7 +944,7 @@ class ContestOfficialRanking(ContestRankingBase):
     def get_ranking_list(self):
         def display_points(points):
             return format_html(
-                u'<td class="user-points">{points}</td>',
+                '<td class="user-points">{points}</td>',
                 points=floatformat(points),
             )
 

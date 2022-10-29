@@ -37,15 +37,11 @@ two_factor_validators_by_length = {
         'err': _('Invalid two-factor authentication token.'),
     },
     16: {
-        'regex_validator': RegexValidator('^[A-Z0-9]{16}$', _('Scratch codes must be 16 base32 characters.')),
+        'regex_validator': RegexValidator('^[A-Z0-9]{16}$', _('Scratch codes must be 16 Base32 characters.')),
         'verify': lambda code, profile: code not in json.loads(profile.scratch_codes),
         'err': _('Invalid scratch code.'),
     },
 }
-
-
-def fix_unicode(string, unsafe=tuple('\u202a\u202b\u202d\u202e')):
-    return string + (sum(k in unsafe for k in string) - string.count('\u202c')) * '\u202c'
 
 
 class ProfileForm(ModelForm):

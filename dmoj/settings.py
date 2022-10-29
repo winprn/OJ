@@ -182,7 +182,7 @@ DMOJ_PROBLEM_MIN_MEMORY_LIMIT = 0  # kilobytes
 DMOJ_PROBLEM_MAX_MEMORY_LIMIT = 1048576  # kilobytes
 DMOJ_PROBLEM_MIN_PROBLEM_POINTS = 0
 DMOJ_PROBLEM_HOT_PROBLEM_COUNT = 7
-DMOJ_PROBLEM_STATEMENT_DISALLOWED_CHARACTERS = {'“', '”', '‘', '’'}
+DMOJ_PROBLEM_STATEMENT_DISALLOWED_CHARACTERS = {'“', '”', '‘', '’', '−', 'ﬀ', 'ﬁ', 'ﬂ', 'ﬃ', 'ﬄ'}
 DMOJ_RATING_COLORS = True
 DMOJ_EMAIL_THROTTLING = (10, 60)
 VNOJ_DISCORD_WEBHOOK_THROTTLING = (10, 60)  # Max 10 messages in 60 seconds
@@ -245,7 +245,6 @@ NOFOLLOW_EXCLUDED = set()
 
 TIMEZONE_BG = None
 TIMEZONE_MAP = None
-TIMEZONE_DETECT_BACKEND = None
 
 TERMS_OF_SERVICE_URL = None
 DEFAULT_USER_LANGUAGE = 'CPP17'
@@ -300,6 +299,7 @@ else:
                     'children': [
                         'judge.ProblemGroup',
                         'judge.ProblemType',
+                        'judge.License',
                     ],
                 },
                 {
@@ -310,11 +310,11 @@ else:
                         'judge.Tag',
                     ]
                 },
+                ('judge.Submission', 'fa-check-square-o'),
                 {
-                    'model': 'judge.Submission',
-                    'icon': 'fa-check-square-o',
+                    'model': 'judge.Language',
+                    'icon': 'fa-file-code-o',
                     'children': [
-                        'judge.Language',
                         'judge.Judge',
                     ],
                 },
@@ -326,19 +326,20 @@ else:
                         'judge.ContestTag',
                     ],
                 },
+                ('judge.Ticket', 'fa-bell'),
                 {
                     'model': 'auth.User',
                     'icon': 'fa-user',
                     'children': [
+                        'judge.Profile',
                         'auth.Group',
                         'registration.RegistrationProfile',
                     ],
                 },
                 {
-                    'model': 'judge.Profile',
-                    'icon': 'fa-user-plus',
+                    'model': 'judge.Organization',
+                    'icon': 'fa-users',
                     'children': [
-                        'judge.Organization',
                         'judge.OrganizationRequest',
                         'judge.Badge',
                     ],
@@ -347,16 +348,20 @@ else:
                     'model': 'judge.NavigationBar',
                     'icon': 'fa-bars',
                     'children': [
-                        'judge.MiscConfig',
-                        'judge.License',
                         'sites.Site',
                         'redirects.Redirect',
                     ],
                 },
                 ('judge.BlogPost', 'fa-rss-square'),
-                ('judge.Comment', 'fa-comment-o'),
+                {
+                    'model': 'judge.Comment',
+                    'icon': 'fa-comment-o',
+                    'children': [
+                        'judge.CommentLock',
+                    ],
+                },
                 ('flatpages.FlatPage', 'fa-file-text-o'),
-                ('judge.Solution', 'fa-pencil'),
+                ('judge.MiscConfig', 'fa-question-circle'),
             ],
             'dashboard': {
                 'breadcrumbs': True,
