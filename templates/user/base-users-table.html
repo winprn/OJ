@@ -10,9 +10,9 @@
                 {%- if sort_links %}{{ sort_order.performance_points }}</a>{% endif %}
             {% endblock %}
         </th>
+        {% block penalty %}{% endblock %}
         {% block before_point_head %}{% endblock %}
-
-        {% block after_point_head %}{% endblock %}
+        {% block rating %}{% endblock %}
     </tr>
 </thead>
 
