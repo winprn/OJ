@@ -233,7 +233,7 @@ function register_time(elems, limit) {
                 $this.text(abs);
                 return;
             }
-            $this.text(rel_format.replace('{time}', time.fromNow()));
+            $this.text(rel_format.replace('{time}', time.format("MMM Do YY")));
             setTimeout(update, 10000);
         }
 
