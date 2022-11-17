@@ -32,7 +32,7 @@ ALLOWED_HOSTS = ['localhost']
 
 CSRF_FAILURE_VIEW = 'judge.views.widgets.csrf_failure'
 
-SITE_ID = 1
+SITE_ID = 3
 SITE_NAME = 'LHPOJ'
 SITE_LONG_NAME = 'LHPOJ: Le Hong Phong HCMC Online Judge'
 SITE_ADMIN_EMAIL = False
