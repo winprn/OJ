@@ -22,8 +22,6 @@
     <tr id="user-{{ user.user.username }}" {% block row_extra scoped %}{% endblock %}>
         <td>
             {{ rank }}
-            <br>
-            {% block admin_operations scoped %} {% endblock %}
         </td>
         {% block after_rank scoped %}{% endblock %}
         <td class="user-name">
