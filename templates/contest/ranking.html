@@ -100,6 +100,10 @@
             white-space: nowrap;
         }
 
+        .select2-container {
+            z-index: 1;
+        }
+
         #search-contest, #search-contest + .select2 {
             margin-top: 0.5em;
         }
@@ -108,26 +112,72 @@
             width: 200px;
             height: 2.3em;
         }
+
+        #org-dropdown-check-list {
+            display: inline-block;
+        }
+
+        #org-check-list-wrapper {
+            display: none;
+            background: #ffffff;
+            border: 1px solid gray;
+            padding: 10px;
+
+            right: auto;
+            position: absolute;
+            z-index: 1;
+        }
+
+        #org-check-list li {
+            list-style: none;
+        }
+
+        #org-dropdown-check-list.visible #org-check-list-wrapper {
+            display: block;
+        }
+
+        #org-check-list-wrapper button {
+            margin-bottom: 5px;
+            margin-left: 5px;
+        }
+
+        #org-check-list {
+            border-bottom: 1px solid gray;
+
+            /* reset properties of the parent elements */
+            color: black;
+            text-align: left;
+            font-weight: normal;
+        }
+
+        .filter-checklist-button {
+            float: right;
+        }
+
+        .select2-selection__rendered {
+            cursor: text;
+            overflow: initial !important;
+            width: 260px !important;
+        }
+
+        .select2-selection__rendered > li {
+            color: black;
+        }
+
+        #select2-org-check-list-results > li {
+            color: black;
+        }
+        #select2-org-check-list-results > li:hover {
+            background: #aaaaaa !important;
+        }
+
+        .select2-results__option[aria-selected=true] {
+            background: #cdcdcd !important;
+        }
     </style>
 {% endblock %}
 
 {% block users_js_media %}
-    {% if can_edit %}
-        <script type="text/javascript">
-            $(function () {
-                $('a.disqualify-participation').click(function (e) {
-                    e.preventDefault();
-                    if (e.ctrlKey || e.metaKey || confirm("{{ _('Are you sure you want to disqualify this participation?') }}"))
-                        $(this).closest('form').submit();
-                })
-                $('a.un-disqualify-participation').click(function (e) {
-                    e.preventDefault();
-                    if (e.ctrlKey || e.metaKey || confirm("{{ _('Are you sure you want to un-disqualify this participation?') }}"))
-                        $(this).closest('form').submit();
-                })
-            });
-        </script>
-    {% endif %}
     {% if not contest.ended %}
         <script type="text/javascript">
             $(function () {
@@ -151,16 +201,21 @@
                     if ($('body').hasClass('window-hidden')) {
                         return ranking_outdated = true;
                     }
+                    var queryParam = window.location.search
                     $.ajax({
-                        url: '?raw'
+                        url: queryParam ? queryParam + '&raw' : '?raw',
                     }).done(function (data) {
                         $('#users-table').html(data);
                         if (localStorage.getItem('show-personal-info') == 'true') {
                             $('.personal-info').show();
                             $('#show-personal-info-checkbox').prop('checked', true);
                         }
+                        {% if tab == 'ranking' %}
+                            window.applyRankingFilter();
+                        {% endif %}
                         window.firstSolve();
                         window.totalAC();
+                        window.enableAdminOperations();
                     }).always(function () {
                         ranking_outdated = false;
                         setTimeout(update_ranking, 10000);
@@ -214,6 +269,16 @@
                 $('#show-personal-info-checkbox').prop('checked', true);
             }
 
+            {% if show_virtual %}
+                $('#show-virtual-participations-checkbox').prop('checked', true);
+            {% endif %}
+
+            $('#show-virtual-participations-checkbox').click(function () {
+                const parser = new URL(window.location.href);
+                parser.searchParams.set('show_virtual', '{{ 'false' if show_virtual else 'true' }}');
+                window.location.href = parser.href;
+            });
+
             var contest_key = '{{contest.key}}';
 
             $("a#cache_alert").click(function () {
@@ -241,12 +306,11 @@
                 return formattedTime[0] * 3600 + formattedTime[1] * 60 + formattedTime[2];
             }
 
-            function timeComparison(sub1, sub2) {
-                if (!sub2) return;
-                return sub1['time'] < sub2['time'];
-            }
+                function timeComparison(sub1, sub2) {
+                    if (!sub2) return;
+                    return sub1['time'] < sub2['time'];
+                }
 
-            window.firstSolve = function() {
                 let firstSolves = {};
 
                 $('td.full-score a').each(function () {
@@ -290,29 +354,41 @@
             window.firstSolve();
 
             window.totalAC = function() {
-                let arr = {};
+                // Problems are indexed from 0
+                let total_ac = {};
+
+                // Number of columns before first problem
+                let offset = {% if is_ICPC_format %}4{% else %}3{% endif %};
 
                 $('td.full-score').each(function () {
-                    arr[$(this).index() - 2] = (arr[$(this).index() - 2] + 1) || 1;
+                    if ($(this).parent().is(':hidden')) {
+                        return;
+                    }
+
+                    total_ac[$(this).index() - offset] = (total_ac[$(this).index() - offset] || 0) + 1;
                 });
                 $('td.total-ac').each(function () {
-                    $(this).text(arr[$(this).index() - 1]);
+                    // There is exactly one column (Total AC) before first problem
+                    $(this).text(total_ac[$(this).index() - 1]);
                 });
             };
 
             window.totalAC();
 
-            {% if tab == 'ranking' %}
-                {% if show_virtual %}
-                    $('#show-virtual-participations-checkbox').prop('checked', true);
-                {% endif %}
+            window.enableAdminOperations = function () {
+                $('a.disqualify-participation').click(function (e) {
+                    e.preventDefault();
+                    if (e.ctrlKey || e.metaKey || confirm("{{ _('Are you sure you want to disqualify this participation?') }}"))
+                        $(this).closest('form').submit();
+                })
+                $('a.un-disqualify-participation').click(function (e) {
+                    e.preventDefault();
+                    if (e.ctrlKey || e.metaKey || confirm("{{ _('Are you sure you want to un-disqualify this participation?') }}"))
+                        $(this).closest('form').submit();
+                })
+            };
 
-                $('#show-virtual-participations-checkbox').click(function () {
-                    const parser = new URL(window.location.href);
-                    parser.searchParams.set('show_virtual', '{{ 'false' if show_virtual else 'true' }}');
-                    window.location.href = parser.href;
-                });
-            {% endif %}
+            window.enableAdminOperations();
         });
 
         {% if tab == 'ranking' %}
@@ -360,6 +436,11 @@
                 });
 
                 $('table#users-table tbody tr').each(function () {
+                    // Skip hidden row (due to filtering)
+                    if ($(this).is(':hidden')) {
+                        return;
+                    }
+
                     var row_data = [];
                     $(this).find('td').each(function () {
                         var $col = $(this);
@@ -401,6 +482,22 @@
             {% if contest.can_see_full_scoreboard(request.user) %}
                 <input id="search-contest" type="text" placeholder="{{ _('View user participation') }}">
             {% endif %}
+        {% endif %}
+        {% if tab == 'ranking' %}
+            <div id="org-dropdown-check-list">
+                <button id="filter-by-organization-button" class="inline-button">
+                    <i class="tab-icon fa fa-filter"></i>
+                    <b>{{ _('Filter') }}</b>
+                </button>
+
+                <div id="org-check-list-wrapper">
+                    <div>
+                        <button id="apply-organization-filter" class="inline-button filter-checklist-button">{{ _('Apply') }}</button>
+                        <button id="clear-organization-filter" class="inline-button filter-checklist-button">{{ _('Clear') }}</button>
+                    </div>
+                    <select id="org-check-list" name="orgs[]" multiple="multiple"></select>
+                </div>
+            </div>
         {% endif %}
         {% if tab != 'official_ranking' %}
             <input id="show-personal-info-checkbox" type="checkbox" style="vertical-align: bottom">
