@@ -2,6 +2,7 @@ import json
 import os
 import re
 import zipfile
+import subprocess
 
 import yaml
 from django.conf import settings

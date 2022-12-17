@@ -5,6 +5,10 @@ td.user-name, td.personal-info, td.organization-name {
     text-align: left;
 }
 
+span.organization {
+    font-size: 12px;
+}
+
 tr {
     padding-bottom: 96px;
 
@@ -17,10 +21,6 @@ tr {
             font-size: 12px;
         }
     }
-}
-
-span.organization {
-    font-size: 12px;
 }
 
 #search-handle {

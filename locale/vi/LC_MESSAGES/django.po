@@ -1340,7 +1340,7 @@ msgstr "tổng kết kỳ thi"
 
 #: judge/models/contest.py:155 judge/models/problem.py:202
 msgid "Plain-text, shown in meta description tag, e.g. for social media."
-msgstr ""
+msgstr "Chào mừng mọi người đến với hệ thống chấm bài tự động của những học sinh của trường THPT chuyên Lê Hồng Phong, Thành phố Hồ Chí Minh."
 "Các thông tin này sẽ hiển thị khi chia sẻ kỳ thi lên mạng xã hội (ví dụ "
 "discord, facebook)."
 
@@ -4513,10 +4513,13 @@ msgstr "Trang web này hoạt động tốt nhất khi JavaScript được cho p
 msgid "proudly powered by %(dmoj)s"
 msgstr "dựa trên nền tảng %(dmoj)s"
 
-#: templates/base.html:363
-#, python-format
-msgid "follow us on %(github)s and %(facebook)s"
-msgstr "theo dõi VNOI trên %(github)s và %(facebook)s"
+#: templates/base.html:359
+msgid ""
+"follow us on <a style=\"color: #808080\" href=\"https://github.com/winprn"
+"/OJ\"><b>Github</b></a>"
+msgstr ""
+"theo dõi LHPOJ trên <a style=\"color: #808080\" href=\"https://github.com/"
+"winprn/OJ\"><b>Github</b></a>"
 
 #: templates/blog/blog-list-tabs.html:4
 msgid "Newsfeed"
