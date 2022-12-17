@@ -94,15 +94,6 @@
     {% endif %}
 {% endblock %}
 
-{% block after_point %}
-    {% for cell in user.problem_cells %}
-        {{ cell }}
-    {% endfor %}
-    {% if has_rating %}
-        <td class="rating-column">{% if user.participation_rating %}{{ rating_number(user.participation_rating) }}{% endif %}</td>
-    {% endif %}
-{% endblock %}
-
 {% block point %}
     {{ user.result_cell }}
 {% endblock %}
