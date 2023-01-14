@@ -508,9 +508,6 @@
                 }
                 $('input#delete-all').change();
             });
-            if (parseInt($total.val()) == 0 && window.valid_files.length) {
-                fill_testcases();
-            }
 
             $("#id_problem-data-zipfile").change((event) => {
                 let fileInput = event.target.files[0];
@@ -518,7 +515,7 @@
                 reader.onload = function(ev) {
                     JSZip.loadAsync(ev.target.result).then(function(zip) {
                         window.valid_files = Object.keys(zip.files).sort();
-                        fill_testcases();
+                        // fill_testcases();
                     }).catch(function(err) {
                         console.log(err);
                         console.error("Failed to open as ZIP file");
@@ -527,6 +524,12 @@
                 reader.readAsArrayBuffer(fileInput);
             })
             $('form').dirty('setAsClean');
+
+            $("#show-testcases-button").click(function(e) {
+                if (parseInt($total.val()) == 0 && window.valid_files.length) {
+                    fill_testcases();
+                }
+            });
         }).change();
     </script>
 {% endblock %}
@@ -721,5 +724,6 @@
         <input type="submit" value="{{ _('Apply!') }}" class="button" id="submit-button">
         <a id="add-case-row" href="#" style="display: None;"><i class="fa fa-plus"></i> {{ _('Add new case') }}</a>
     </form>
+    <input type="button" value="{{ _('Show testcases') }}" class="button" id="show-testcases-button">
     <div style="display: none" class="generator-args-editor"><textarea></textarea><a class="button">{{ _('Save') }}</a></div>
 {% endblock %}
