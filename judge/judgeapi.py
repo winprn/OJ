@@ -117,6 +117,10 @@ def disconnect_judge(judge, force=False):
     judge_request({'name': 'disconnect-judge', 'judge-id': judge.name, 'force': force}, reply=False)
 
 
+def update_disable_judge(judge):
+    judge_request({'name': 'disable-judge', 'judge-id': judge.name, 'is-disabled': judge.is_disabled})
+
+
 def abort_submission(submission):
     from .models import Submission
     # We only want to try to abort a submission if it's still grading, otherwise this can lead to fully graded
@@ -128,5 +132,5 @@ def abort_submission(submission):
     # and returns a bad-request, the submission is not falsely shown as "Aborted" when it will still be judged.
     if not response.get('judge-aborted', True):
         Submission.objects.filter(id=submission.id).update(status='AB', result='AB', points=0)
-        event.post('sub_%s' % Submission.get_id_secret(submission.id), {'type': 'aborted-submission'})
+        event.post('sub_%s' % Submission.get_id_secret(submission.id), {'type': 'aborted'})
         _post_update_submission(submission, done=True)

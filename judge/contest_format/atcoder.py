@@ -89,13 +89,13 @@ class AtCoderContestFormat(DefaultContestFormat):
                 format_data[str(prob)] = {'time': dt, 'points': score, 'penalty': prev}
                 points += score
 
-        participation.cumtime = cumtime + penalty
+        participation.cumtime = max(cumtime + penalty, 0)
         participation.score = round(points, self.contest.points_precision)
         participation.tiebreaker = 0
         participation.format_data = format_data
         participation.save()
 
-    def display_user_problem(self, participation, contest_problem, frozen=False):
+    def display_user_problem(self, participation, contest_problem, first_solves, frozen=False):
         format_data = (participation.format_data or {}).get(str(contest_problem.id))
         if format_data:
             penalty = format_html('<small style="color:red"> ({penalty})</small>',
@@ -103,6 +103,7 @@ class AtCoderContestFormat(DefaultContestFormat):
             return format_html(
                 '<td class="{state}"><a href="{url}">{points}{penalty}<div class="solving-time">{time}</div></a></td>',
                 state=(('pretest-' if self.contest.run_pretests_only and contest_problem.is_pretested else '') +
+                       ('first-solve ' if first_solves.get(str(contest_problem.id), None) == participation.id else '') +
                        self.best_solution_state(format_data['points'], contest_problem.points)),
                 url=reverse('contest_user_submissions',
                             args=[self.contest.key, participation.user.user.username, contest_problem.problem.code]),

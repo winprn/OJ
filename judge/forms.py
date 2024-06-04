@@ -1,5 +1,6 @@
 import json
 import os
+import zipfile
 from operator import attrgetter, itemgetter
 
 import pyotp
@@ -12,17 +13,18 @@ from django.core.exceptions import ValidationError
 from django.core.validators import FileExtensionValidator, RegexValidator
 from django.db.models import Q
 from django.forms import BooleanField, CharField, ChoiceField, DateInput, Form, ModelForm, MultipleChoiceField, \
-    inlineformset_factory
+    formset_factory, inlineformset_factory
 from django.forms.widgets import DateTimeInput
 from django.template.defaultfilters import filesizeformat
 from django.urls import reverse, reverse_lazy
-from django.utils.translation import gettext_lazy as _
+from django.utils.text import format_lazy
+from django.utils.translation import gettext_lazy as _, ngettext_lazy
 
 from django_ace import AceWidget
 from judge.models import BlogPost, Contest, ContestAnnouncement, ContestProblem, Language, LanguageLimit, \
     Organization, Problem, Profile, Solution, Submission, Tag, WebAuthnCredential
 from judge.utils.subscription import newsletter_id
-from judge.widgets import HeavyPreviewPageDownWidget, HeavySelect2MultipleWidget, HeavySelect2Widget, MartorWidget, \
+from judge.widgets import HeavySelect2MultipleWidget, HeavySelect2Widget, MartorWidget, \
     Select2MultipleWidget, Select2Widget
 
 TOTP_CODE_LENGTH = 6
@@ -31,7 +33,9 @@ two_factor_validators_by_length = {
     TOTP_CODE_LENGTH: {
         'regex_validator': RegexValidator(
             f'^[0-9]{{{TOTP_CODE_LENGTH}}}$',
-            _(f'Two-factor authentication tokens must be {TOTP_CODE_LENGTH} decimal digits.'),
+            format_lazy(ngettext_lazy('Two-factor authentication tokens must be {count} decimal digit.',
+                                      'Two-factor authentication tokens must be {count} decimal digits.',
+                                      TOTP_CODE_LENGTH), count=TOTP_CODE_LENGTH),
         ),
         'verify': lambda code, profile: not profile.check_totp_code(code),
         'err': _('Invalid two-factor authentication token.'),
@@ -51,13 +55,14 @@ class ProfileForm(ModelForm):
 
     class Meta:
         model = Profile
-        fields = ['about', 'display_badge', 'organizations', 'timezone', 'language', 'ace_theme', 'user_script']
+        fields = ['about', 'display_badge', 'organizations', 'timezone', 'language', 'ace_theme',
+                  'site_theme', 'user_script']
         widgets = {
             'display_badge': Select2Widget(attrs={'style': 'width:200px'}),
-            'user_script': AceWidget(theme='github'),
             'timezone': Select2Widget(attrs={'style': 'width:200px'}),
             'language': Select2Widget(attrs={'style': 'width:200px'}),
             'ace_theme': Select2Widget(attrs={'style': 'width:200px'}),
+            'site_theme': Select2Widget(attrs={'style': 'width:200px'}),
         }
 
         # Make sure that users cannot change their `about` in contest mode
@@ -70,15 +75,12 @@ class ProfileForm(ModelForm):
             fields.append('math_engine')
             widgets['math_engine'] = Select2Widget(attrs={'style': 'width:200px'})
 
-        if HeavyPreviewPageDownWidget is not None:
-            widgets['about'] = HeavyPreviewPageDownWidget(
-                preview=reverse_lazy('profile_preview'),
-                attrs={'style': 'max-width:700px;min-width:700px;width:700px'},
-            )
+        widgets['about'] = MartorWidget(attrs={'data-markdownfy-url': reverse_lazy('profile_preview')})
 
     def clean_about(self):
-        if 'about' in self.changed_data and not self.instance.has_any_solves:
-            raise ValidationError(_('You must solve at least one problem before you can update your profile.'))
+        if 'about' in self.changed_data and not self.instance.has_enough_solves:
+            raise ValidationError(_('You must solve at least %d problems before you can update your profile.')
+                                  % settings.VNOJ_INTERACT_MIN_PROBLEM_COUNT)
         return self.cleaned_data['about']
 
     def clean(self):
@@ -86,8 +88,9 @@ class ProfileForm(ModelForm):
         max_orgs = settings.DMOJ_USER_MAX_ORGANIZATION_COUNT
 
         if sum(org.is_open for org in organizations) > max_orgs:
-            raise ValidationError(
-                _('You may not be part of more than {count} public organizations.').format(count=max_orgs))
+            raise ValidationError(ngettext_lazy('You may not be part of more than {count} public organization.',
+                                                'You may not be part of more than {count} public organizations.',
+                                                max_orgs).format(count=max_orgs))
 
         return self.cleaned_data
 
@@ -116,6 +119,12 @@ class UserForm(ModelForm):
         # In contest mode, we don't want user to change their name.
         if settings.VNOJ_OFFICIAL_CONTEST_MODE:
             fields.remove('first_name')
+
+    def clean_first_name(self):
+        first_name = self.cleaned_data['first_name']
+        if len(first_name) > 30:
+            raise ValidationError(_('Your full name is too long!'), code='NAME_LIMIT_EXCEEDED')
+        return first_name
 
 
 class ProposeProblemSolutionForm(ModelForm):
@@ -185,7 +194,7 @@ class ProblemEditForm(ModelForm):
         if self.org_pk is None:
             return code
         org = Organization.objects.get(pk=self.org_pk)
-        prefix = ''.join(x for x in org.slug.lower() if x.isalpha()) + '_'
+        prefix = ''.join(x for x in org.slug.lower() if x.isalnum()) + '_'
         if not code.startswith(prefix):
             raise forms.ValidationError(_('Problem id code must starts with `%s`') % (prefix, ),
                                         'problem_id_invalid_prefix')
@@ -216,11 +225,12 @@ class ProblemEditForm(ModelForm):
     class Meta:
         model = Problem
         fields = ['is_public', 'code', 'name', 'time_limit', 'memory_limit', 'points', 'partial',
-                  'statement_file', 'source', 'types', 'group', 'testcase_visibility_mode',
-                  'description', 'testers']
+                  'statement_file', 'source', 'types', 'group', 'submission_source_visibility_mode',
+                  'testcase_visibility_mode', 'description', 'testers']
         widgets = {
             'types': Select2MultipleWidget,
             'group': Select2Widget,
+            'submission_source_visibility_mode': Select2Widget,
             'testcase_visibility_mode': Select2Widget,
             'description': MartorWidget(attrs={'data-markdownfy-url': reverse_lazy('problem_preview')}),
             'testers': HeavySelect2MultipleWidget(
@@ -245,6 +255,36 @@ class ProblemEditForm(ModelForm):
                 'invalid': _('Only accept alphanumeric characters (a-z, 0-9) and underscore (_)'),
             },
         }
+
+
+class ProblemImportPolygonForm(Form):
+    code = CharField(max_length=32, validators=[RegexValidator('^[a-z0-9_]+$', _('Problem code must be ^[a-z0-9_]+$'))])
+    package = forms.FileField(
+        label=_('Package'),
+        widget=forms.FileInput(attrs={'accept': 'application/zip'}),
+    )
+    ignore_zero_point_batches = forms.BooleanField(required=False, label=_('Ignore zero-point batches'))
+    ignore_zero_point_cases = forms.BooleanField(required=False, label=_('Ignore zero-point cases'))
+    append_main_solution_to_tutorial = forms.BooleanField(required=False, initial=True,
+                                                          label=_('Append main solution to tutorial'))
+    main_tutorial_language = forms.CharField(required=False)
+    do_update = forms.BooleanField(required=False, initial=False, disabled=True, widget=forms.HiddenInput())
+
+    def __init__(self, code=None, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if code is not None:
+            self.fields['code'].initial = code
+            self.fields['code'].disabled = True
+            self.fields['do_update'].initial = True
+
+
+class ProblemImportPolygonStatementForm(Form):
+    polygon_language = forms.CharField()
+    site_language = forms.CharField()
+
+
+class ProblemImportPolygonStatementFormSet(formset_factory(ProblemImportPolygonStatementForm)):
+    pass
 
 
 class ProposeProblemSolutionFormSet(inlineformset_factory(Problem, Solution, form=ProposeProblemSolutionForm)):
@@ -351,6 +391,18 @@ class ProblemSubmitForm(ModelForm):
                 raise forms.ValidationError(_('File size is too big! Maximum file size is %s')
                                             % filesizeformat(max_file_size))
 
+            if lang_obj.key == 'SCRATCH':
+                try:
+                    archive = zipfile.ZipFile(content.file)
+                    info = archive.getinfo('project.json')
+                    if info.file_size > max_file_size:
+                        raise forms.ValidationError(_('project.json is too big! Maximum file size is %s')
+                                                    % filesizeformat(max_file_size))
+
+                    self.files['submission_file'].file = archive.open('project.json')
+                except (zipfile.BadZipFile, KeyError):
+                    pass
+
     def __init__(self, *args, judge_choices=(), **kwargs):
         super(ProblemSubmitForm, self).__init__(*args, **kwargs)
         self.fields['language'].empty_label = None
@@ -395,24 +447,40 @@ class TagProblemAssignForm(Form):
 class OrganizationForm(ModelForm):
     class Meta:
         model = Organization
-        fields = ['name', 'slug', 'is_open', 'about', 'logo_override_image']
-        if HeavyPreviewPageDownWidget is not None:
-            widgets = {'about': HeavyPreviewPageDownWidget(preview=reverse_lazy('organization_preview'))}
+        fields = ['name', 'slug', 'is_open', 'about', 'logo_override_image', 'admins']
+        widgets = {'about': MartorWidget(attrs={'data-markdownfy-url': reverse_lazy('organization_preview')})}
+        if HeavySelect2MultipleWidget is not None:
+            widgets.update({
+                'admins': HeavySelect2MultipleWidget(
+                    data_view='profile_select2',
+                    attrs={'style': 'width: 100%'},
+                ),
+            })
 
 
-class CustomAuthenticationForm(AuthenticationForm):
+class SocialAuthMixin:
+    def _has_social_auth(self, key):
+        return (getattr(settings, 'SOCIAL_AUTH_%s_KEY' % key, None) and
+                getattr(settings, 'SOCIAL_AUTH_%s_SECRET' % key, None))
+
+    @property
+    def has_google_auth(self):
+        return self._has_social_auth('GOOGLE_OAUTH2')
+
+    @property
+    def has_facebook_auth(self):
+        return self._has_social_auth('FACEBOOK')
+
+    @property
+    def has_github_auth(self):
+        return self._has_social_auth('GITHUB_SECURE')
+
+
+class CustomAuthenticationForm(AuthenticationForm, SocialAuthMixin):
     def __init__(self, *args, **kwargs):
         super(CustomAuthenticationForm, self).__init__(*args, **kwargs)
         self.fields['username'].widget.attrs.update({'placeholder': _('Username')})
         self.fields['password'].widget.attrs.update({'placeholder': _('Password')})
-
-        self.has_google_auth = self._has_social_auth('GOOGLE_OAUTH2')
-        self.has_facebook_auth = self._has_social_auth('FACEBOOK')
-        self.has_github_auth = self._has_social_auth('GITHUB_SECURE')
-
-    def _has_social_auth(self, key):
-        return (getattr(settings, 'SOCIAL_AUTH_%s_KEY' % key, None) and
-                getattr(settings, 'SOCIAL_AUTH_%s_SECRET' % key, None))
 
     def clean(self):
         username = self.cleaned_data.get('username')
@@ -425,7 +493,7 @@ class CustomAuthenticationForm(AuthenticationForm):
         return super(CustomAuthenticationForm, self).clean()
 
     def confirm_login_allowed(self, user):
-        if not user.is_active and user.profile.ban_reason:
+        if user.profile.is_banned:
             raise forms.ValidationError(
                 _('This account has been banned. Reason: %s') % user.profile.ban_reason,
                 code='banned',
@@ -447,7 +515,7 @@ class NoAutoCompleteCharField(forms.CharField):
 class TOTPForm(Form):
     TOLERANCE = settings.DMOJ_TOTP_TOLERANCE_HALF_MINUTES
 
-    totp_or_scratch_code = NoAutoCompleteCharField(required=False)
+    totp_or_scratch_code = NoAutoCompleteCharField(required=False, widget=forms.TextInput(attrs={'autofocus': True}))
 
     def __init__(self, *args, **kwargs):
         self.profile = kwargs.pop('profile')
@@ -565,6 +633,12 @@ class ContestCloneForm(Form):
 
 
 class ProposeContestProblemForm(ModelForm):
+    def __init__(self, *args, **kwargs):
+        self.user = kwargs.pop('user', None)
+        super(ProposeContestProblemForm, self).__init__(*args, **kwargs)
+
+        self.fields['problem'].queryset = Problem.get_visible_problems(self.user)
+
     class Meta:
         model = ContestProblem
         verbose_name = _('Problem')
@@ -575,6 +649,10 @@ class ProposeContestProblemForm(ModelForm):
 
         widgets = {
             'problem': HeavySelect2Widget(data_view='problem_select2', attrs={'style': 'width: 100%'}),
+        }
+
+        error_messages = {
+            'problem': {'invalid_choice': _('No such problem.')},
         }
 
 
@@ -604,12 +682,17 @@ class ProposeContestProblemFormSet(
 
 class BlogPostForm(ModelForm):
     def __init__(self, *args, **kwargs):
-        kwargs.pop('org_pk', None)
+        self.user = kwargs.pop('user', None)
         super(BlogPostForm, self).__init__(*args, **kwargs)
+
+        if not self.user.has_perm('judge.mark_global_post'):
+            self.fields.pop('global_post')
+        if not self.user.has_perm('judge.pin_post'):
+            self.fields.pop('sticky')
 
     class Meta:
         model = BlogPost
-        fields = ['title', 'publish_on', 'visible', 'content']
+        fields = ['title', 'publish_on', 'visible', 'global_post', 'sticky', 'content']
         widgets = {
             'content': MartorWidget(attrs={'data-markdownfy-url': reverse_lazy('blog_preview')}),
             'summary': MartorWidget(attrs={'data-markdownfy-url': reverse_lazy('blog_preview')}),
@@ -655,7 +738,7 @@ class ContestForm(ModelForm):
         if self.org_pk is None:
             return key
         org = Organization.objects.get(pk=self.org_pk)
-        prefix = ''.join(x for x in org.slug.lower() if x.isalpha()) + '_'
+        prefix = ''.join(x for x in org.slug.lower() if x.isalnum()) + '_'
         if not key.startswith(prefix):
             raise forms.ValidationError(_('Contest id must starts with `%s`') % (prefix, ),
                                         'contest_id_invalid_prefix')
@@ -669,7 +752,9 @@ class ContestForm(ModelForm):
             'use_clarifications',
             'hide_problem_tags',
             'hide_problem_authors',
+            'show_short_display',
             'scoreboard_visibility',
+            'format_name',
             'description',
             'is_private',
             'private_contestants',
@@ -680,6 +765,7 @@ class ContestForm(ModelForm):
             'end_time': DateTimeInput(format='%Y-%m-%d %H:%M:%S', attrs={'class': 'datetimefield'}),
             'description': MartorWidget(attrs={'data-markdownfy-url': reverse_lazy('contest_preview')}),
             'scoreboard_visibility': Select2Widget(),
+            'format_name': Select2Widget(),
             'private_contestants': HeavySelect2MultipleWidget(
                 data_view='profile_select2',
                 attrs={'style': 'width: 100%'},

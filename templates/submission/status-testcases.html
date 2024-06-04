@@ -1,6 +1,6 @@
 {% macro make_status(case) %}
     {% set partial = (case.status == 'AC' and  case.points < case.total) %}
-    <span title="{{ case.long_status }}" class="case-{%- if partial -%}_AC{% else %}{{- case.status -}}{%- endif -%}">
+    <span title="{{ case.long_status }}" class="case-{%- if partial -%}_AC{% else %}{{- case.result_class -}}{%- endif -%}">
         {%- if case.status == 'SC' %}&mdash;{% elif partial %}{{_("Partial Accepted")}}{% else %}{{ case.long_status }}{% endif -%}
     </span>
 {% endmacro %}
@@ -173,11 +173,6 @@
                     {% endif %}
                     {{ submission.memory|kbdetailformat }}
                     <br>
-                    {% if submission.result == "AC" %}
-                        <b>{{ _('Maximum single-case runtime:') }}</b>
-                        <span title="{{ max_execution_time }}s">{{ max_execution_time|floatformat(3) }}s</span>
-                        <br>
-                    {% endif %}
                 {% endif %}
                 {% if is_pretest %}
                     <b>{{ _('Final pretest score:') }}</b>

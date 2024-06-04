@@ -9,15 +9,16 @@ from django.templatetags.static import static
 from django.urls import include, path, re_path, reverse
 from django.utils.functional import lazy
 from django.utils.translation import gettext_lazy as _
+from django.views.decorators.clickjacking import xframe_options_sameorigin
 from django.views.generic import RedirectView
 from martor.views import markdown_search_user
 
 from judge.feed import AtomBlogFeed, AtomCommentFeed, AtomProblemFeed, BlogFeed, CommentFeed, ProblemFeed
-from judge.sitemap import BlogPostSitemap, ContestSitemap, HomePageSitemap, OrganizationSitemap, ProblemSitemap, \
-    SolutionSitemap, UrlSitemap, UserSitemap
+from judge.sitemap import sitemaps
 from judge.views import TitledTemplateView, api, blog, comment, contests, language, license, mailgun, organization, \
     preview, problem, problem_manage, ranked_submission, register, stats, status, submission, tag, tasks, ticket, \
     two_factor, user, widgets
+from judge.views.magazine import MagazinePage
 from judge.views.problem_data import ProblemDataView, ProblemSubmissionDiff, \
     problem_data_file, problem_init_view
 from judge.views.register import ActivationView, RegistrationView
@@ -113,18 +114,20 @@ urlpatterns = [
         path('/suggest_list/', problem.SuggestList.as_view(), name='problem_suggest_list'),
         path('/suggest', problem.ProblemSuggest.as_view(), name='problem_suggest'),
         path('/create', problem.ProblemCreate.as_view(), name='problem_create'),
+        path('/import-polygon', problem.ProblemImportPolygon.as_view(), name='problem_import_polygon'),
     ])),
 
     path('problem/<str:problem>', include([
         path('', problem.ProblemDetail.as_view(), name='problem_detail'),
         path('/edit', problem.ProblemEdit.as_view(), name='problem_edit'),
         path('/editorial', problem.ProblemSolution.as_view(), name='problem_editorial'),
-        path('/raw', problem.ProblemRaw.as_view(), name='problem_raw'),
+        path('/raw', xframe_options_sameorigin(problem.ProblemRaw.as_view()), name='problem_raw'),
         path('/pdf', problem.ProblemPdfView.as_view(), name='problem_pdf'),
         path('/pdf/<slug:language>', problem.ProblemPdfView.as_view(), name='problem_pdf'),
         path('/clone', problem.ProblemClone.as_view(), name='problem_clone'),
         path('/submit', problem.ProblemSubmit.as_view(), name='problem_submit'),
         path('/resubmit/<int:submission>', problem.ProblemSubmit.as_view(), name='problem_submit'),
+        path('/update-polygon', problem.ProblemUpdatePolygon.as_view(), name='problem_update_polygon'),
 
         path('/rank/', paged_list_view(ranked_submission.RankedSubmissions, 'ranked_submissions')),
         path('/submissions/', paged_list_view(submission.ProblemSubmissions, 'chronological_submissions')),
@@ -164,7 +167,7 @@ urlpatterns = [
     path('tag/<str:tagproblem>', include([
         path('', tag.TagProblemDetail.as_view(), name='tagproblem_detail'),
         path('/assign', tag.TagProblemAssign.as_view(), name='tagproblem_assign'),
-        path('/', lambda _, problem: HttpResponsePermanentRedirect(reverse('tagproblem_detail', args=[tag]))),
+        path('/', lambda _, tagproblem: HttpResponsePermanentRedirect(reverse('tagproblem_detail', args=[tagproblem]))),
     ])),
 
     path('submissions/', paged_list_view(submission.AllSubmissions, 'all_submissions')),
@@ -195,6 +198,7 @@ urlpatterns = [
     path('user/<str:user>', include([
         path('', user.UserAboutPage.as_view(), name='user_page'),
         path('/ban', user.UserBan.as_view(), name='user_ban'),
+        path('/unban', user.UserUnban.as_view(), name='user_unban'),
         path('/blog/', paged_list_view(user.UserBlogPage, 'user_blog')),
         path('/comment/', paged_list_view(user.UserCommentPage, 'user_comment')),
         path('/solved/', include([
@@ -239,6 +243,7 @@ urlpatterns = [
         path('/ranking/', contests.ContestRanking.as_view(), name='contest_ranking'),
         path('/public_ranking/', contests.ContestPublicRanking.as_view(), name='contest_public_ranking'),
         path('/official_ranking/', contests.ContestOfficialRanking.as_view(), name='contest_official_ranking'),
+        path('/register', contests.ContestRegister.as_view(), name='contest_register'),
         path('/join', contests.ContestJoin.as_view(), name='contest_join'),
         path('/leave', contests.ContestLeave.as_view(), name='contest_leave'),
         path('/stats', contests.ContestStats.as_view(), name='contest_stats'),
@@ -273,7 +278,9 @@ urlpatterns = [
 
     path('organizations/', organization.OrganizationList.as_view(), name='organization_list'),
     path('organizations/create', organization.CreateOrganization.as_view(), name='organization_create'),
-    path('organization/<int:pk>-<slug:slug>', include([
+    path('organization/<int:pk>-<path:suffix>',
+         lambda _, pk, suffix: HttpResponsePermanentRedirect('/organization/%s' % suffix)),
+    path('organization/<slug:slug>', include([
         path('', organization.OrganizationHome.as_view(), name='organization_home'),
         path('/users/', organization.OrganizationUsers.as_view(), name='organization_users'),
         path('/join', organization.JoinOrganization.as_view(), name='join_organization'),
@@ -303,38 +310,13 @@ urlpatterns = [
             path('new', organization.BlogPostCreateOrganization.as_view(), name='blog_post_create_organization'),
         ])),
 
-        path('/', lambda _, pk, slug: HttpResponsePermanentRedirect(reverse('organization_home', args=[pk, slug]))),
+        path('/', lambda _, slug: HttpResponsePermanentRedirect(reverse('organization_home', args=[slug]))),
     ])),
 
     path('runtimes/', language.LanguageList.as_view(), name='runtime_list'),
     path('runtimes/matrix/', status.version_matrix, name='version_matrix'),
     path('status/', status.status_all, name='status_all'),
     path('status/oj/', status.status_oj, name='status_oj'),
-
-    path('api/', include([
-        path('contest/list', api.api_v1_contest_list),
-        path('contest/info/<str:contest>', api.api_v1_contest_detail),
-        path('problem/list', api.api_v1_problem_list),
-        path('problem/info/<str:problem>', api.api_v1_problem_info),
-        path('user/list', api.api_v1_user_list),
-        path('user/info/<str:user>', api.api_v1_user_info),
-        path('user/submissions/<str:user>', api.api_v1_user_submissions),
-        path('user/ratings/<int:page>', api.api_v1_user_ratings),
-        path('v2/', include([
-            path('contests', api.api_v2.APIContestList.as_view()),
-            path('contest/<str:contest>', api.api_v2.APIContestDetail.as_view()),
-            path('problems', api.api_v2.APIProblemList.as_view()),
-            path('problem/<str:problem>', api.api_v2.APIProblemDetail.as_view()),
-            path('users', api.api_v2.APIUserList.as_view()),
-            path('user/<str:user>', api.api_v2.APIUserDetail.as_view()),
-            path('submissions', api.api_v2.APISubmissionList.as_view()),
-            path('submission/<int:submission>', api.api_v2.APISubmissionDetail.as_view()),
-            path('organizations', api.api_v2.APIOrganizationList.as_view()),
-            path('participations', api.api_v2.APIContestParticipationList.as_view()),
-            path('languages', api.api_v2.APILanguageList.as_view()),
-            path('judges', api.api_v2.APIJudgeList.as_view()),
-        ])),
-    ])),
 
     path('posts/', paged_list_view(blog.PostList, 'blog_post_list')),
     path('posts/new', blog.BlogPostCreate.as_view(), name='blog_post_new'),
@@ -343,6 +325,7 @@ urlpatterns = [
     path('post/<int:id>-<slug:slug>', include([
         path('', blog.PostView.as_view(), name='blog_post'),
         path('/edit', blog.BlogPostEdit.as_view(), name='blog_post_edit'),
+        path('/delete', blog.BlogPostDelete.as_view(), name='blog_post_delete'),
         path('/', lambda _, id, slug: HttpResponsePermanentRedirect(reverse('blog_post', args=[id, slug]))),
     ])),
 
@@ -413,18 +396,7 @@ urlpatterns = [
         path('/notes', ticket.TicketNotesEditView.as_view(), name='ticket_notes'),
     ])),
 
-    path('sitemap.xml', sitemap, {'sitemaps': {
-        'problem': ProblemSitemap,
-        'user': UserSitemap,
-        'home': HomePageSitemap,
-        'contest': ContestSitemap,
-        'organization': OrganizationSitemap,
-        'blog': BlogPostSitemap,
-        'solutions': SolutionSitemap,
-        'pages': UrlSitemap([
-            {'location': '/about/', 'priority': 0.9},
-        ]),
-    }}),
+    path('sitemap.xml', sitemap, {'sitemaps': sitemaps}),
 
     path('judge-select2/', include([
         path('profile/', UserSelect2View.as_view(), name='profile_select2'),
@@ -445,6 +417,8 @@ urlpatterns = [
         path('failure', tasks.demo_failure),
         path('progress', tasks.demo_progress),
     ])),
+
+    path('magazine/', MagazinePage.as_view(), name='magazine'),
 ]
 
 favicon_paths = ['apple-touch-icon-180x180.png', 'apple-touch-icon-114x114.png', 'android-chrome-72x72.png',
@@ -471,6 +445,24 @@ if 'newsletter' in settings.INSTALLED_APPS:
     urlpatterns.append(path('newsletter/', include('newsletter.urls')))
 if 'impersonate' in settings.INSTALLED_APPS:
     urlpatterns.append(path('impersonate/', include('impersonate.urls')))
+
+if settings.VNOJ_ENABLE_API:
+    urlpatterns.append(
+        path('api/v2/', include([
+            path('contests', api.api_v2.APIContestList.as_view()),
+            path('contest/<str:contest>', api.api_v2.APIContestDetail.as_view()),
+            path('problems', api.api_v2.APIProblemList.as_view()),
+            path('problem/<str:problem>', api.api_v2.APIProblemDetail.as_view()),
+            path('users', api.api_v2.APIUserList.as_view()),
+            path('user/<str:user>', api.api_v2.APIUserDetail.as_view()),
+            path('submissions', api.api_v2.APISubmissionList.as_view()),
+            path('submission/<int:submission>', api.api_v2.APISubmissionDetail.as_view()),
+            path('organizations', api.api_v2.APIOrganizationList.as_view()),
+            path('participations', api.api_v2.APIContestParticipationList.as_view()),
+            path('languages', api.api_v2.APILanguageList.as_view()),
+            path('judges', api.api_v2.APIJudgeList.as_view()),
+        ])),
+    )
 
 try:
     with open(os.path.join(os.path.dirname(__file__), 'local_urls.py')) as f:

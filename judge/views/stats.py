@@ -3,14 +3,13 @@ import datetime
 
 from django.conf import settings
 from django.db.models import Count, DateField, F, FloatField, Q
-from django.db.models.expressions import ExpressionWrapper
 from django.db.models.functions import Cast
 from django.http import HttpResponseForbidden, JsonResponse
 from django.http.response import HttpResponseBadRequest
 from django.utils.dateparse import parse_datetime
 from django.utils.translation import gettext_lazy as _
 
-from judge.models import Problem, Submission
+from judge.models import Language, Problem, Submission
 from judge.utils.stats import get_bar_chart, get_pie_chart, get_stacked_bar_chart
 
 
@@ -30,10 +29,12 @@ def submission_data(start_date, end_date, utc_offset):
         .values('date_only', 'result').annotate(count=Count('result')).values_list('date_only', 'result', 'count')
     )
 
+    language_id_to_name = {id: name for id, name in Language.objects.values_list('id', 'name')}
     languages = (
-        queryset.values('language__name').annotate(count=Count('language__name'))
-        .filter(count__gt=0).order_by('-count').values_list('language__name', 'count')
+        queryset.values('language_id').annotate(count=Count('language_id'))
+        .filter(count__gt=0).order_by('-count').values_list('language_id', 'count')
     )
+    languages = [(language_id_to_name[id], count) for id, count in languages]
 
     results = (
         queryset.values('result').annotate(count=Count('result'))
@@ -44,7 +45,7 @@ def submission_data(start_date, end_date, utc_offset):
     queue_time = (
         # Divide by 1000000 to convert microseconds to seconds
         queryset.filter(judged_date__isnull=False, rejudged_date__isnull=True)
-        .annotate(queue_time=ExpressionWrapper((F('judged_date') - F('date')) / 1000000, output_field=FloatField()))
+        .annotate(queue_time=Cast(F('judged_date') - F('date'), FloatField()) / 1000000.0)
         .order_by('queue_time').values_list('queue_time', flat=True)
     )
 

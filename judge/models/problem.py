@@ -8,8 +8,7 @@ from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator, RegexValidator
 from django.db import models, transaction
-from django.db.models import CASCADE, F, Q, QuerySet, SET_NULL
-from django.db.models.expressions import RawSQL
+from django.db.models import CASCADE, Exists, F, FilteredRelation, OuterRef, Q, SET_NULL
 from django.db.models.functions import Coalesce
 from django.urls import reverse
 from django.utils import timezone
@@ -21,10 +20,10 @@ from judge.models.problem_data import problem_data_storage
 from judge.models.profile import Organization, Profile
 from judge.models.runtime import Language
 from judge.user_translations import gettext as user_gettext
-from judge.utils.raw_sql import RawSQLColumn, unique_together_left_join
+from judge.utils.url import get_absolute_pdf_url
 
 __all__ = ['ProblemGroup', 'ProblemType', 'Problem', 'ProblemTranslation', 'ProblemClarification', 'License',
-           'Solution', 'SubmissionSourceAccess', 'TranslatedProblemQuerySet', 'TranslatedProblemForeignKeyQuerySet']
+           'Solution', 'SubmissionSourceAccess', 'TranslatedProblemQuerySet']
 
 
 def disallowed_characters_validator(text):
@@ -86,22 +85,17 @@ class TranslatedProblemQuerySet(SearchQuerySet):
         super(TranslatedProblemQuerySet, self).__init__(('code', 'name', 'description'), **kwargs)
 
     def add_i18n_name(self, language):
-        queryset = self._clone()
-        alias = unique_together_left_join(queryset, ProblemTranslation, 'problem', 'language', language)
-        return queryset.annotate(i18n_name=Coalesce(RawSQL('%s.name' % alias, ()), F('name'),
-                                                    output_field=models.CharField()))
+        return self.annotate(i18n_translation=FilteredRelation(
+            'translations', condition=Q(translations__language=language),
+        )).annotate(i18n_name=Coalesce(F('i18n_translation__name'), F('name'), output_field=models.CharField()))
 
-
-class TranslatedProblemForeignKeyQuerySet(QuerySet):
-    def add_problem_i18n_name(self, key, language, name_field=None):
-        queryset = self._clone() if name_field is None else self.annotate(_name=F(name_field))
-        alias = unique_together_left_join(queryset, ProblemTranslation, 'problem', 'language', language,
-                                          parent_model=Problem)
-        # You must specify name_field if Problem is not yet joined into the QuerySet.
-        kwargs = {key: Coalesce(RawSQL('%s.name' % alias, ()),
-                                F(name_field) if name_field else RawSQLColumn(Problem, 'name'),
-                                output_field=models.CharField())}
-        return queryset.annotate(**kwargs)
+    def add_i18n_description(self, language):
+        return self.annotate(i18n_translation=FilteredRelation(
+            'translations', condition=Q(translations__language=language),
+        )).annotate(i18n_description=Coalesce(
+            F('i18n_translation__description'), F('description'),
+            output_field=models.TextField()),
+        )
 
 
 class SubmissionSourceAccess:
@@ -147,7 +141,8 @@ class Problem(models.Model):
                             validators=[RegexValidator('^[a-z0-9_]+$', _('Problem code must be ^[a-z0-9_]+$'))],
                             help_text=_('A short, unique code for the problem, used in the url after /problem/'))
     name = models.CharField(max_length=100, verbose_name=_('problem name'), db_index=True,
-                            help_text=_('The full name of the problem, as shown in the problem list.'))
+                            help_text=_('The full name of the problem, as shown in the problem list.'),
+                            validators=[disallowed_characters_validator])
     pdf_url = models.CharField(max_length=200, verbose_name=_('PDF statement URL'), blank=True,
                                help_text=_('URL to PDF statement. The PDF file must be embeddable (Mobile web browsers'
                                            'may not support embedding). Fallback included.'))
@@ -241,6 +236,10 @@ class Problem(models.Model):
         # We only set original points it is not deferred
         if 'points' in self.__dict__:
             self.__original_points = self.points
+
+    @property
+    def absolute_pdf_url(self):
+        return get_absolute_pdf_url(self.pdf_url) if self.pdf_url else None
 
     @cached_property
     def types_list(self):
@@ -369,22 +368,35 @@ class Problem(models.Model):
             q = Q(is_public=True)
             if not (user.has_perm('judge.see_organization_problem') or edit_public_problem):
                 # Either not organization private or in the organization.
-                q &= (
-                    Q(is_organization_private=False) |
-                    Q(is_organization_private=True, organizations__in=user.profile.organizations.all())
+                q &= Q(is_organization_private=False) | cls.organization_filter_q(
+                    # Avoids needlessly joining Organization
+                    Profile.organizations.through.objects.filter(profile=user.profile).values('organization_id'),
                 )
 
             # Suggesters should be able to view suggesting problems
             if edit_suggesting_problem:
                 q |= Q(suggester__isnull=False, is_public=False)
 
-            # Authors, curators, and testers should always have access, so OR at the very end.
-            q |= Q(authors=user.profile)
-            q |= Q(curators=user.profile)
-            q |= Q(testers=user.profile)
+            # Authors, curators, and testers should always have access.
+            q = cls.q_add_author_curator_tester(q, user.profile)
             queryset = queryset.filter(q)
 
         return queryset
+
+    @classmethod
+    def q_add_author_curator_tester(cls, q, profile):
+        # This is way faster than the obvious |= Q(authors=profile) et al. because we are not doing
+        # joins and forcing the user to clean it up with .distinct().
+        q |= Exists(Problem.authors.through.objects.filter(problem=OuterRef('pk'), profile=profile))
+        q |= Exists(Problem.curators.through.objects.filter(problem=OuterRef('pk'), profile=profile))
+        q |= Exists(Problem.testers.through.objects.filter(problem=OuterRef('pk'), profile=profile))
+        return q
+
+    @classmethod
+    def organization_filter_q(cls, queryset):
+        q = Q(is_organization_private=True)
+        q &= Exists(Problem.organizations.through.objects.filter(problem=OuterRef('pk'), organization__in=queryset))
+        return q
 
     @classmethod
     def get_public_problems(cls):
@@ -611,6 +623,7 @@ class Problem(models.Model):
             ('change_public_visibility', _('Change is_public field')),
             ('change_manually_managed', _('Change is_manually_managed field')),
             ('see_organization_problem', _('See organization-private problems')),
+            ('import_polygon_package', _('Import Codeforces Polygon package')),
         )
         verbose_name = _('problem')
         verbose_name_plural = _('problems')
@@ -652,8 +665,8 @@ class LanguageLimit(models.Model):
 
 
 class Solution(models.Model):
-    problem = models.OneToOneField(Problem, on_delete=SET_NULL, verbose_name=_('associated problem'),
-                                   null=True, blank=True, related_name='solution')
+    problem = models.OneToOneField(Problem, on_delete=CASCADE, verbose_name=_('associated problem'),
+                                   blank=True, related_name='solution')
     is_public = models.BooleanField(verbose_name=_('public visibility'), default=False)
     publish_on = models.DateTimeField(verbose_name=_('publish date'))
     authors = models.ManyToManyField(Profile, verbose_name=_('authors'), blank=True)

@@ -1,8 +1,7 @@
+import json
 import logging
 import os
 import re
-import shutil
-import zipfile
 from datetime import timedelta
 from operator import itemgetter
 from random import randrange
@@ -22,21 +21,22 @@ from django.utils.functional import cached_property
 from django.utils.html import escape, format_html
 from django.utils.safestring import mark_safe
 from django.utils.translation import gettext as _, gettext_lazy
-from django.views.generic import CreateView, ListView, UpdateView, View
+from django.views.generic import CreateView, FormView, ListView, UpdateView, View
 from django.views.generic.base import TemplateResponseMixin
 from django.views.generic.detail import SingleObjectMixin
 from reversion import revisions
 
 from judge.comments import CommentedDetailView
-from judge.forms import LanguageLimitFormSet, ProblemCloneForm, ProblemEditForm, ProblemSubmitForm, \
-    ProposeProblemSolutionFormSet
+from judge.forms import LanguageLimitFormSet, ProblemCloneForm, ProblemEditForm, ProblemImportPolygonForm, \
+    ProblemImportPolygonStatementFormSet, ProblemSubmitForm, ProposeProblemSolutionFormSet
 from judge.models import ContestSubmission, Judge, Language, Problem, ProblemGroup, \
     ProblemTranslation, ProblemType, RuntimeVersion, Solution, Submission, SubmissionSource
-from judge.pdf_problems import DefaultPdfMaker, HAS_PDF
 from judge.tasks import on_new_problem
 from judge.template_context import misc_config
+from judge.utils.codeforces_polygon import ImportPolygonError, PolygonImporter
 from judge.utils.diggpaginator import DiggPaginator
 from judge.utils.opengraph import generate_opengraph
+from judge.utils.pdfoid import PDF_RENDERING_ENABLED, render_pdf
 from judge.utils.problems import hot_problems, user_attempted_ids, \
     user_completed_ids
 from judge.utils.strings import safe_float_or_none, safe_int_or_none
@@ -208,7 +208,7 @@ class ProblemDetail(ProblemMixin, SolvedProblemMixin, CommentedDetailView):
 
         context['available_judges'] = Judge.objects.filter(online=True, problems=self.object)
         context['show_languages'] = self.object.allowed_languages.count() != Language.objects.count()
-        context['has_pdf_render'] = HAS_PDF
+        context['has_pdf_render'] = PDF_RENDERING_ENABLED
         context['completed_problem_ids'] = self.get_completed_problems()
         context['attempted_problems'] = self.get_attempted_problems()
 
@@ -255,7 +255,7 @@ class ProblemPdfView(ProblemMixin, SingleObjectMixin, View):
     languages = set(map(itemgetter(0), settings.LANGUAGES))
 
     def get(self, request, *args, **kwargs):
-        if not HAS_PDF:
+        if not PDF_RENDERING_ENABLED:
             raise Http404()
 
         language = kwargs.get('language', self.request.LANGUAGE_CODE)
@@ -263,48 +263,47 @@ class ProblemPdfView(ProblemMixin, SingleObjectMixin, View):
             raise Http404()
 
         problem = self.get_object()
-        try:
-            trans = problem.translations.get(language=language)
-        except ProblemTranslation.DoesNotExist:
-            trans = None
+        pdf_basename = '%s.%s.pdf' % (problem.code, language)
 
-        cache = os.path.join(settings.DMOJ_PDF_PROBLEM_CACHE, '%s.%s.pdf' % (problem.code, language))
+        def render_problem_pdf():
+            self.logger.info('Rendering PDF in %s: %s', language, problem.code)
 
-        if not os.path.exists(cache):
-            self.logger.info('Rendering: %s.%s.pdf', problem.code, language)
-            with DefaultPdfMaker() as maker, translation.override(language):
-                problem_name = problem.name if trans is None else trans.name
-                maker.html = get_template('problem/raw.html').render({
-                    'problem': problem,
-                    'problem_name': problem_name,
-                    'description': problem.description if trans is None else trans.description,
-                    'url': request.build_absolute_uri(),
-                    'math_engine': maker.math_engine,
-                }).replace('"//', '"https://').replace("'//", "'https://")
-                maker.title = problem_name
+            with translation.override(language):
+                try:
+                    trans = problem.translations.get(language=language)
+                except ProblemTranslation.DoesNotExist:
+                    trans = None
 
-                assets = ['style.css', 'pygment-github.css']
-                if maker.math_engine == 'jax':
-                    assets.append('mathjax_config.js')
-                for file in assets:
-                    maker.load(file, os.path.join(settings.DMOJ_RESOURCES, file))
-                maker.make()
-                if not maker.success:
-                    self.logger.error('Failed to render PDF for %s', problem.code)
-                    return HttpResponse(maker.log, status=500, content_type='text/plain')
-                shutil.move(maker.pdffile, cache)
+                problem_name = trans.name if trans else problem.name
+                return render_pdf(
+                    html=get_template('problem/raw.html').render({
+                        'problem': problem,
+                        'problem_name': problem_name,
+                        'description': trans.description if trans else problem.description,
+                        'url': request.build_absolute_uri(),
+                    }).replace('"//', '"https://').replace("'//", "'https://"),
+                    title=problem_name,
+                )
 
         response = HttpResponse()
-
-        if hasattr(settings, 'DMOJ_PDF_PROBLEM_INTERNAL'):
-            url_path = '%s/%s.%s.pdf' % (settings.DMOJ_PDF_PROBLEM_INTERNAL, problem.code, language)
-        else:
-            url_path = None
-
-        add_file_response(request, response, url_path, cache)
-
         response['Content-Type'] = 'application/pdf'
-        response['Content-Disposition'] = 'inline; filename=%s.%s.pdf' % (problem.code, language)
+        response['Content-Disposition'] = f'inline; filename={pdf_basename}'
+
+        if settings.DMOJ_PDF_PROBLEM_CACHE:
+            pdf_filename = os.path.join(settings.DMOJ_PDF_PROBLEM_CACHE, pdf_basename)
+            if not os.path.exists(pdf_filename):
+                with open(pdf_filename, 'wb') as f:
+                    f.write(render_problem_pdf())
+
+            if settings.DMOJ_PDF_PROBLEM_INTERNAL:
+                url_path = f'{settings.DMOJ_PDF_PROBLEM_INTERNAL}/{pdf_basename}'
+            else:
+                url_path = None
+
+            add_file_response(request, response, url_path, pdf_filename)
+        else:
+            response.content = render_problem_pdf()
+
         return response
 
 
@@ -324,11 +323,8 @@ class ProblemList(QueryStringSortMixin, TitleMixin, SolvedProblemMixin, ListView
     def get_paginator(self, queryset, per_page, orphans=0,
                       allow_empty_first_page=True, **kwargs):
         paginator = DiggPaginator(queryset, per_page, body=6, padding=2, orphans=orphans,
+                                  count=queryset.values('pk').count(),
                                   allow_empty_first_page=allow_empty_first_page, **kwargs)
-        # Get the number of pages and then add in this magic.
-        # noinspection PyStatementEffect
-        paginator.num_pages
-
         queryset = queryset.add_i18n_name(self.request.LANGUAGE_CODE)
         sort_key = self.order.lstrip('-')
         if sort_key in self.sql_sort:
@@ -379,20 +375,19 @@ class ProblemList(QueryStringSortMixin, TitleMixin, SolvedProblemMixin, ListView
         return queryset.search(query, queryset.BOOLEAN).extra(order_by=['-relevance'])
 
     def get_filter(self):
-        filter = Q(is_public=True) & Q(is_organization_private=False)
+        _filter = Q(is_public=True) & Q(is_organization_private=False)
         if self.profile is not None:
-            filter |= Q(authors=self.profile)
-            filter |= Q(curators=self.profile)
-            filter |= Q(testers=self.profile)
-        return filter
+            _filter = Problem.q_add_author_curator_tester(_filter, self.profile)
+        return _filter
 
     def get_normal_queryset(self):
-        filter = self.get_filter()
-        queryset = Problem.objects.filter(filter).select_related('group').defer('description', 'summary')
+        _filter = self.get_filter()
+        queryset = Problem.objects.filter(_filter).select_related('group').defer('description', 'summary')
 
         if self.profile is not None and self.hide_solved:
-            queryset = queryset.exclude(id__in=Submission.objects.filter(user=self.profile, points=F('problem__points'))
-                                        .values_list('problem__id', flat=True))
+            queryset = queryset.exclude(id__in=Submission.objects
+                                        .filter(user=self.profile, result='AC', case_points__gte=F('case_total'))
+                                        .values_list('problem_id', flat=True))
         if self.show_types:
             queryset = queryset.prefetch_related('types')
         queryset = queryset.annotate(has_public_editorial=Case(
@@ -453,8 +448,9 @@ class ProblemList(QueryStringSortMixin, TitleMixin, SolvedProblemMixin, ListView
         if not points:
             return 0, 0, {}
         if len(points) == 1:
-            return points[0], points[0] + 1, {
-                'min': points[0],
+            return points[0] - 1, points[0] + 1, {
+                'min': points[0] - 1,
+                '50%': points[0],
                 'max': points[0] + 1,
             }
 
@@ -506,7 +502,7 @@ class ProblemList(QueryStringSortMixin, TitleMixin, SolvedProblemMixin, ListView
             return generic_message(request, 'FTS syntax error', e.args[1], status=400)
 
     def post(self, request, *args, **kwargs):
-        to_update = ('hide_solved', 'show_types', 'full_text')
+        to_update = ('hide_solved', 'show_types', 'has_public_editorial', 'full_text')
         for key in to_update:
             if key in request.GET:
                 val = request.GET.get(key) == '1'
@@ -631,7 +627,7 @@ class ProblemSubmit(LoginRequiredMixin, ProblemMixin, TitleMixin, SingleObjectFo
         form_data = getattr(form, 'cleaned_data', form.initial)
         if 'language' in form_data:
             form.fields['source'].widget.mode = form_data['language'].ace
-        form.fields['source'].widget.theme = self.request.profile.ace_theme
+        form.fields['source'].widget.theme = self.request.profile.resolved_ace_theme
 
         return form
 
@@ -676,22 +672,11 @@ class ProblemSubmit(LoginRequiredMixin, ProblemMixin, TitleMixin, SingleObjectFo
                 self.new_submission.save()
 
             submission_file = form.files.get('submission_file', None)
-            if submission_file is not None:
-                if self.new_submission.language.key == 'SCRATCH':
-                    try:
-                        archive = zipfile.ZipFile(submission_file.file)
-                        submission_file.file = archive.open('project.json')
-                        submission_file.name = 'dummy.json'
-                    except (zipfile.BadZipFile, KeyError):
-                        pass
-
-                source_url = submission_uploader(
-                    submission_file=submission_file,
-                    problem_code=self.new_submission.problem.code,
-                    user_id=self.new_submission.user.user.id,
-                )
-            else:
-                source_url = ''
+            source_url = submission_uploader(
+                submission_file=submission_file,
+                problem_code=self.new_submission.problem.code,
+                user_id=self.new_submission.user.user.id,
+            ) if submission_file else ''
 
             source = SubmissionSource(submission=self.new_submission, source=form.cleaned_data['source'] + source_url)
             source.save()
@@ -837,6 +822,14 @@ class ProblemCreate(PermissionRequiredMixin, TitleMixin, CreateView):
         initial['description'] = misc_config(self.request)['misc_config']['description_example']
         initial['memory_limit'] = 262144  # 256 MB
         initial['partial'] = True
+        try:
+            initial['group'] = ProblemGroup.objects.get(name='Uncategorized').pk
+        except ProblemGroup.DoesNotExist:
+            initial['group'] = ProblemGroup.objects.order_by('id').first().pk
+        try:
+            initial['types'] = ProblemType.objects.get(name='uncategorized').pk
+        except ProblemType.DoesNotExist:
+            initial['types'] = ProblemType.objects.order_by('id').first().pk
         return initial
 
 
@@ -863,6 +856,88 @@ class ProblemSuggest(ProblemCreate):
 
         on_new_problem.delay(problem.code, is_suggested=True)
         return HttpResponseRedirect(self.get_success_url())
+
+
+class ProblemImportPolygon(PermissionRequiredMixin, TitleMixin, FormView):
+    title = gettext_lazy('Import problem from Codeforces Polygon package')
+    template_name = 'problem/import-polygon.html'
+    model = Problem
+    form_class = ProblemImportPolygonForm
+    permission_required = 'judge.import_polygon_package'
+
+    def get_formset(self):
+        return ProblemImportPolygonStatementFormSet(
+            data=self.request.POST if self.request.POST else None,
+            prefix='statements',
+        )
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['formset'] = self.get_formset()
+        context['site_languages_json'] = mark_safe(json.dumps({code: str(name) for code, name in settings.LANGUAGES}))
+        return context
+
+    def post(self, request, *args, **kwargs):
+        form = self.get_form()
+        formset = self.get_formset()
+        if form.is_valid() and formset.is_valid():
+            package = form.cleaned_data['package'].file
+            code = form.cleaned_data['code']
+            do_update = form.cleaned_data['do_update']
+            config = {
+                'ignore_zero_point_batches': form.cleaned_data['ignore_zero_point_batches'],
+                'ignore_zero_point_cases': form.cleaned_data['ignore_zero_point_cases'],
+                'append_main_solution_to_tutorial': form.cleaned_data['append_main_solution_to_tutorial'],
+                'main_tutorial_language': form.cleaned_data.get('main_tutorial_language', None),
+                'main_statement_language': None,
+                'polygon_to_site_language_map': {},
+            }
+            if len(formset) > 1:
+                for statement in formset:
+                    polygon_language = statement.cleaned_data['polygon_language']
+                    site_language = statement.cleaned_data['site_language']
+
+                    if site_language == settings.LANGUAGE_CODE:
+                        config['main_statement_language'] = polygon_language
+                    else:
+                        config['polygon_to_site_language_map'][polygon_language] = site_language
+
+            try:
+                importer = PolygonImporter(
+                    package=package,
+                    code=code,
+                    authors=[self.request.profile],
+                    curators=[],
+                    do_update=do_update,
+                    interactive=False,
+                    config=config,
+                )
+                importer.run()
+            except ImportPolygonError as e:
+                return generic_message(request, _('Failed to import problem'), str(e), status=400)
+
+            return HttpResponseRedirect(reverse('problem_detail', args=[code]))
+
+        return self.render_to_response(self.get_context_data())
+
+
+class ProblemUpdatePolygon(ProblemImportPolygon, ProblemMixin, SingleObjectMixin):
+    title = gettext_lazy('Update problem from Codeforces Polygon package')
+
+    def get_object(self, queryset=None):
+        problem = super().get_object(queryset)
+        if not problem.is_editable_by(self.request.user):
+            raise PermissionDenied()
+        return problem
+
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        kwargs['code'] = self.object.code
+        return kwargs
+
+    def dispatch(self, request, *args, **kwargs):
+        self.object = self.get_object()
+        return super().dispatch(request, *args, **kwargs)
 
 
 class ProblemEdit(ProblemMixin, TitleMixin, UpdateView):

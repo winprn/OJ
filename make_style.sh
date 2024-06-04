@@ -1,24 +1,14 @@
-#!/bin/bash
-if ! [ -x "$(command -v sass)" ]; then
-  echo 'Error: sass is not installed.' >&2
-  exit 1
-fi
-
-if ! [ -x "$(command -v postcss)" ]; then
-  echo 'Error: postcss is not installed.' >&2
-  exit 1
-fi
-
-if ! [ -x "$(command -v autoprefixer)" ]; then
-  echo 'Error: autoprefixer is not installed.' >&2
-  exit 1
-fi
-
-FILES=(sass_processed/style.css sass_processed/content-description.css sass_processed/table.css
-       sass_processed/ranks.css sass_processed/martor-description.css)
-
+#!/bin/sh
 cd "$(dirname "$0")" || exit
-sass resources:sass_processed
 
-echo
-postcss "${FILES[@]}" --verbose --use autoprefixer -d resources
+node scripts/check-package-installed.js postcss sass autoprefixer || exit
+
+build_style() {
+  echo "Creating $1 style..."
+  cp resources/vars-$1.scss resources/vars.scss
+  npx sass resources:sass_processed
+  npx postcss sass_processed/style.css sass_processed/martor-description.css sass_processed/select2-dmoj.css --verbose --use autoprefixer -d $2
+}
+
+build_style 'default' 'resources'
+build_style 'dark' 'resources/dark'

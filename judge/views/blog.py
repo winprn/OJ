@@ -2,8 +2,8 @@ from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
 from django.db import IntegrityError
-from django.db.models import Count, Max
-from django.db.models.expressions import Value
+from django.db.models import Count, FilteredRelation, Max, Q
+from django.db.models.expressions import F, Value
 from django.db.models.functions import Coalesce
 from django.http import (Http404, HttpResponse, HttpResponseBadRequest,
                          HttpResponseForbidden, HttpResponseNotFound,
@@ -12,6 +12,7 @@ from django.urls import reverse
 from django.utils import timezone
 from django.utils.translation import gettext as _
 from django.views.generic import CreateView, ListView, UpdateView
+from django.views.generic.detail import SingleObjectMixin, View
 from reversion import revisions
 
 from judge.comments import CommentedDetailView
@@ -22,9 +23,9 @@ from judge.models import (BlogPost, BlogVote, Comment, Contest, Language,
 from judge.tasks import on_new_blogpost
 from judge.utils.cachedict import CacheDict
 from judge.utils.diggpaginator import DiggPaginator
-from judge.utils.problems import user_completed_ids
-from judge.utils.raw_sql import RawSQLColumn, unique_together_left_join
+from judge.utils.opengraph import generate_opengraph
 from judge.utils.tickets import filter_visible_tickets
+from judge.utils.unicode import remove_accents
 from judge.utils.views import TitleMixin, generic_message
 
 
@@ -39,8 +40,9 @@ def vote_blog(request, delta):
     if 'id' not in request.POST or len(request.POST['id']) > 10:
         return HttpResponseBadRequest()
 
-    if not request.user.is_staff and not request.profile.has_any_solves:
-        return HttpResponseBadRequest(_('You must solve at least one problem before you can vote.'),
+    if request.profile.is_new_user:
+        return HttpResponseBadRequest(_('You must solve at least %d problems before you can vote.')
+                                      % settings.VNOJ_INTERACT_MIN_PROBLEM_COUNT,
                                       content_type='text/plain')
 
     if request.profile.mute:
@@ -117,9 +119,10 @@ class PostListBase(ListView):
         queryset = (BlogPost.objects.filter(visible=True, publish_on__lte=timezone.now())
                     .prefetch_related('authors__user', 'authors__display_badge'))
         if self.request.user.is_authenticated:
-            queryset = queryset.annotate(vote_score=Coalesce(RawSQLColumn(BlogVote, 'score'), Value(0)))
             profile = self.request.profile
-            unique_together_left_join(queryset, BlogVote, 'blog', 'voter', profile.id)
+            queryset = queryset.annotate(
+                my_vote=FilteredRelation('votes', condition=Q(votes__voter_id=profile.id)),
+            ).annotate(vote_score=Coalesce(F('my_vote__score'), Value(0)))
         return queryset
 
     def get_context_data(self, **kwargs):
@@ -179,16 +182,6 @@ class PostList(PostListBase):
         context['language_count'] = Language.objects.count
 
         now = timezone.now()
-
-        # Dashboard stuff
-        if self.request.user.is_authenticated:
-            user = self.request.profile
-            context['recently_attempted_problems'] = (Submission.objects.filter(user=user)
-                                                      .exclude(problem__in=user_completed_ids(user))
-                                                      .values_list('problem__code', 'problem__name', 'problem__points')
-                                                      .annotate(points=Max('points'), latest=Max('date'))
-                                                      .order_by('-latest')
-                                                      [:settings.DMOJ_BLOG_RECENTLY_ATTEMPTED_PROBLEMS_COUNT])
 
         visible_contests = Contest.get_visible_contests(self.request.user).filter(is_visible=True) \
                                   .order_by('start_time')
@@ -252,14 +245,20 @@ class PostView(TitleMixin, CommentedDetailView):
     def get_queryset(self):
         queryset = super().get_queryset()
         if self.request.user.is_authenticated:
-            queryset = queryset.annotate(vote_score=Coalesce(RawSQLColumn(BlogVote, 'score'), Value(0)))
             profile = self.request.profile
-            unique_together_left_join(queryset, BlogVote, 'blog', 'voter', profile.id)
+            queryset = queryset.annotate(
+                my_vote=FilteredRelation('votes', condition=Q(votes__voter_id=profile.id)),
+            ).annotate(vote_score=Coalesce(F('my_vote__score'), Value(0)))
         return queryset
 
     def get_context_data(self, **kwargs):
         context = super(PostView, self).get_context_data(**kwargs)
-        context['og_image'] = self.object.og_image
+
+        metadata = generate_opengraph('generated-meta-blog:%d' % self.object.id,
+                                      self.object.summary or self.object.content, 'blog')
+        context['meta_description'] = metadata[0]
+        context['og_image'] = self.object.og_image or metadata[1]
+
         return context
 
     def get_object(self, queryset=None):
@@ -273,6 +272,7 @@ class BlogPostCreate(TitleMixin, CreateView):
     template_name = 'blog/edit.html'
     model = BlogPost
     form_class = BlogPostForm
+    context_object_name = 'post'
 
     def get_title(self):
         return _('Creating new blog post')
@@ -280,10 +280,15 @@ class BlogPostCreate(TitleMixin, CreateView):
     def get_content_title(self):
         return _('Creating new blog post')
 
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        kwargs['user'] = self.request.user
+        return kwargs
+
     def form_valid(self, form):
         with revisions.create_revision(atomic=True):
             post = form.save()
-            post.slug = self.request.user.username.lower()
+            post.slug = remove_accents(self.request.user.username.lower())
             post.publish_on = timezone.now()
             post.authors.add(self.request.user.profile)
             post.save()
@@ -312,6 +317,7 @@ class BlogPostEdit(BlogPostMixin, TitleMixin, UpdateView):
     template_name = 'blog/edit.html'
     model = BlogPost
     form_class = BlogPostForm
+    context_object_name = 'post'
 
     def get_title(self):
         return _('Updating blog post')
@@ -322,7 +328,13 @@ class BlogPostEdit(BlogPostMixin, TitleMixin, UpdateView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         context['edit'] = True
+        context['delete'] = self.request.user.has_perm('judge.delete_blogpost')
         return context
+
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        kwargs['user'] = self.request.user
+        return kwargs
 
     def form_valid(self, form):
         with revisions.create_revision(atomic=True):
@@ -335,3 +347,19 @@ class BlogPostEdit(BlogPostMixin, TitleMixin, UpdateView):
             return generic_message(request, _('Permission denied'),
                                    _('You cannot edit blog post.'))
         return super().dispatch(request, *args, **kwargs)
+
+
+class BlogPostDelete(BlogPostMixin, SingleObjectMixin, View):
+    def dispatch(self, request, *args, **kwargs):
+        if request.method != 'POST':
+            return HttpResponseForbidden()
+
+        return super().dispatch(request, *args, **kwargs)
+
+    def post(self, request, *args, **kwargs):
+        if not request.user.has_perm('judge.delete_blogpost'):
+            raise PermissionDenied()
+
+        post = self.get_object()
+        post.delete()
+        return HttpResponseRedirect('/')

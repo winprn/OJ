@@ -33,7 +33,7 @@
         {% endif %}
     </div>
     <div style="width: 100%;">
-        <h2 style="color:#393630; display:inline">
+        <h2 style="display:inline">
             {% block content_title %}
                 {% if content_title %}{{ content_title }}{% else %}{{ title }}{% endif %}
             {% endblock %}
@@ -86,5 +86,4 @@
     {% if REQUIRE_JAX %}
         {% include "mathjax-load.html" %}
     {% endif %}
-    {% include "comments/math.html" %}
 {% endblock %}

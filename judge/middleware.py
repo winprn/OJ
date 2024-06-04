@@ -6,10 +6,20 @@ from urllib.parse import quote
 
 from django.conf import settings
 from django.contrib.auth.models import User
+from django.contrib.sites.shortcuts import get_current_site
+from django.core.cache import cache
 from django.http import HttpResponse, HttpResponseRedirect
+from django.shortcuts import get_object_or_404
 from django.urls import Resolver404, resolve, reverse
 from django.utils.encoding import force_bytes
 from requests.exceptions import HTTPError
+
+from judge.models import MiscConfig, Organization
+
+try:
+    import uwsgi
+except ImportError:
+    uwsgi = None
 
 
 class ShortCircuitMiddleware:
@@ -36,6 +46,10 @@ class DMOJLoginMiddleware(object):
         request.official_contest_mode = settings.VNOJ_OFFICIAL_CONTEST_MODE
         if request.user.is_authenticated:
             profile = request.profile = request.user.profile
+            if uwsgi:
+                uwsgi.set_logvar('username', request.user.username)
+                uwsgi.set_logvar('language', request.LANGUAGE_CODE)
+
             logout_path = reverse('auth_logout')
             login_2fa_path = reverse('login_2fa')
             webauthn_path = reverse('webauthn_assert')
@@ -63,6 +77,8 @@ class DMOJImpersonationMiddleware(object):
 
     def __call__(self, request):
         if request.user.is_impersonate:
+            if uwsgi:
+                uwsgi.set_logvar('username', f'{request.impersonator.username} as {request.user.username}')
             request.no_profile_update = True
             request.profile = request.user.profile
         return self.get_response(request)
@@ -123,3 +139,69 @@ class APIMiddleware(object):
             response.status_code = 401
             return response
         return self.get_response(request)
+
+
+class MiscConfigDict(dict):
+    __slots__ = ('language', 'site', 'backing')
+
+    def __init__(self, language='', domain=None):
+        self.language = language
+        self.site = domain
+        self.backing = None
+        super().__init__()
+
+    def __missing__(self, key):
+        if self.backing is None:
+            cache_key = 'misc_config'
+            backing = cache.get(cache_key)
+            if backing is None:
+                backing = dict(MiscConfig.objects.values_list('key', 'value'))
+                cache.set(cache_key, backing, 86400)
+            self.backing = backing
+
+        keys = ['%s.%s' % (key, self.language), key] if self.language else [key]
+        if self.site is not None:
+            keys = ['%s:%s' % (self.site, key) for key in keys] + keys
+
+        for attempt in keys:
+            result = self.backing.get(attempt)
+            if result is not None:
+                break
+        else:
+            result = ''
+
+        self[key] = result
+        return result
+
+
+class MiscConfigMiddleware:
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        domain = get_current_site(request).domain
+        request.misc_config = MiscConfigDict(language=request.LANGUAGE_CODE, domain=domain)
+        return self.get_response(request)
+
+
+class OrganizationSubdomainMiddleware(object):
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        subdomain: str = request.get_host().split('.')[0]
+        if subdomain.isnumeric() or subdomain in settings.VNOJ_IGNORED_ORGANIZATION_SUBDOMAINS:
+            return self.get_response(request)
+
+        request.organization = get_object_or_404(Organization, slug=subdomain)
+        # if the user is trying to access the home page, redirect to the organization's home page
+        if request.path == '/':
+            return HttpResponseRedirect(request.organization.get_absolute_url())
+
+        return self.get_response(request)
+
+    def process_template_response(self, request, response):
+        if hasattr(request, 'organization') and 'logo_override_image' not in response.context_data:
+            # inject the logo override image into the template context
+            response.context_data['logo_override_image'] = request.organization.logo_override_image
+        return response
